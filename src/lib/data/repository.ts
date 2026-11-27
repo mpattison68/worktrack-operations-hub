@@ -631,6 +631,54 @@ export async function createWorkerRole(
   return role;
 }
 
+export async function updateWorkerRole(
+  session: AuthSession,
+  roleId: string,
+  input: { roleType: WorkerRoleType; name: string; sharesCrewSchedule: boolean },
+): Promise<WorkerRole> {
+  if (!can(session.role, "rates.edit")) {
+    throw new Error("Access denied: only Management / Admin can edit worker roles.");
+  }
+  if (!input.name.trim()) throw new Error("Role name is required.");
+  if (isSupabaseConfigured && supabase) {
+    const { data, error } = await supabase
+      .from("worker_roles")
+      .update({
+        role_type: input.roleType,
+        name: input.name.trim(),
+        shares_crew_schedule: input.sharesCrewSchedule,
+      })
+      .eq("id", roleId)
+      .eq("business_id", session.businessId)
+      .select("*")
+      .single();
+    if (error || !data) throw new Error(error?.message ?? "Failed to update worker role.");
+    return {
+      id: data.id,
+      businessId: data.business_id,
+      roleType: data.role_type,
+      name: data.name,
+      sharesCrewSchedule: data.shares_crew_schedule,
+      active: data.active,
+      createdAt: data.created_at,
+    };
+  }
+  const state = loadSyntheticStore();
+  const role = state.workerRoles.find((r) => r.id === roleId);
+  if (!role) throw new Error("Worker role not found.");
+  assertBusinessBoundary(session, role.businessId, "worker role");
+  role.name = input.name.trim();
+  role.roleType = input.roleType;
+  role.sharesCrewSchedule = input.sharesCrewSchedule;
+  appendSyntheticAudit(state, session, "worker_role", role.id, "updated", {
+    name: role.name,
+    roleType: role.roleType,
+    sharesCrewSchedule: role.sharesCrewSchedule,
+  });
+  saveSyntheticStore(state);
+  return role;
+}
+
 export async function createPayRule(
   session: AuthSession,
   input: {
@@ -718,6 +766,99 @@ export async function createPayRule(
     workerRoleId: rule.workerRoleId,
     baseRateCents: rule.baseRateCents,
     effectiveFrom: rule.effectiveFrom,
+  });
+  saveSyntheticStore(state);
+  return rule;
+}
+
+export async function updatePayRule(
+  session: AuthSession,
+  payRuleId: string,
+  input: {
+    workerRoleId: string;
+    payBasis: PayBasis;
+    baseRateCents: number;
+    normalHoursPerDay: number;
+    normalWorkdaysPerWeek: number;
+    weekdayOtHourlyCents: number | null;
+    saturdayRateCents: number | null;
+    sundayRateCents: number | null;
+    publicHolidayRateCents: number | null;
+    weeklyProrationPolicy: "full_week_entitlement" | "prorated_by_days" | "none";
+    effectiveFrom: string;
+    effectiveTo: string | null;
+    isConfirmed: boolean;
+    notes: string;
+  },
+): Promise<PayRule> {
+  if (!can(session.role, "rates.edit")) {
+    throw new Error("Access denied: only Management / Admin can edit pay rules.");
+  }
+  const bundle = await listWorkforceBundle(session);
+  const validationError = validatePayRuleCandidate({ id: payRuleId, ...input }, bundle.payRules);
+  if (validationError) throw new Error(validationError);
+
+  if (isSupabaseConfigured && supabase) {
+    const { data, error } = await supabase
+      .from("pay_rules")
+      .update({
+        pay_basis: input.payBasis,
+        base_rate_cents: input.baseRateCents,
+        normal_hours_per_day: input.normalHoursPerDay,
+        normal_workdays_per_week: input.normalWorkdaysPerWeek,
+        weekday_ot_hourly_cents: input.weekdayOtHourlyCents,
+        saturday_rate_cents: input.saturdayRateCents,
+        sunday_rate_cents: input.sundayRateCents,
+        public_holiday_rate_cents: input.publicHolidayRateCents,
+        weekly_proration_policy: input.weeklyProrationPolicy,
+        effective_from: input.effectiveFrom,
+        effective_to: input.effectiveTo,
+        is_confirmed: input.isConfirmed,
+        notes: input.notes.trim(),
+      })
+      .eq("id", payRuleId)
+      .eq("business_id", session.businessId)
+      .select("*")
+      .single();
+    if (error || !data) throw new Error(error?.message ?? "Failed to update pay rule.");
+    return {
+      id: data.id,
+      businessId: data.business_id,
+      workerRoleId: data.worker_role_id,
+      payBasis: data.pay_basis,
+      baseRateCents: Number(data.base_rate_cents),
+      normalHoursPerDay: Number(data.normal_hours_per_day),
+      normalWorkdaysPerWeek: Number(data.normal_workdays_per_week),
+      weekdayOtHourlyCents:
+        data.weekday_ot_hourly_cents === null ? null : Number(data.weekday_ot_hourly_cents),
+      saturdayRateCents:
+        data.saturday_rate_cents === null ? null : Number(data.saturday_rate_cents),
+      sundayRateCents: data.sunday_rate_cents === null ? null : Number(data.sunday_rate_cents),
+      publicHolidayRateCents:
+        data.public_holiday_rate_cents === null ? null : Number(data.public_holiday_rate_cents),
+      weeklyProrationPolicy: data.weekly_proration_policy,
+      effectiveFrom: data.effective_from,
+      effectiveTo: data.effective_to,
+      isConfirmed: data.is_confirmed,
+      notes: data.notes ?? "",
+      createdAt: data.created_at,
+    };
+  }
+
+  const state = loadSyntheticStore();
+  const rule = state.payRules.find((r) => r.id === payRuleId);
+  if (!rule) throw new Error("Pay rule not found.");
+  assertBusinessBoundary(session, rule.businessId, "pay rule");
+  Object.assign(rule, { ...input, notes: input.notes.trim() });
+  appendSyntheticAudit(state, session, "pay_rule", rule.id, "updated", {
+    workerRoleId: rule.workerRoleId,
+    baseRateCents: rule.baseRateCents,
+    weekdayOtHourlyCents: rule.weekdayOtHourlyCents,
+    saturdayRateCents: rule.saturdayRateCents,
+    sundayRateCents: rule.sundayRateCents,
+    publicHolidayRateCents: rule.publicHolidayRateCents,
+    effectiveFrom: rule.effectiveFrom,
+    effectiveTo: rule.effectiveTo,
   });
   saveSyntheticStore(state);
   return rule;

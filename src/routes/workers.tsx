@@ -1,13 +1,12 @@
 import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Check, Plus, UserPlus, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronRight, Plus, UserPlus, X } from "lucide-react";
 import { toast } from "sonner";
 import { en } from "@/i18n/en";
 import { useWorkTrackAuth } from "@/lib/auth-context";
 import {
   closePayRule,
-  createPayRule,
   createWorkerAssignment,
   createWorkerRole,
   listJobs,
@@ -18,7 +17,9 @@ import {
 } from "@/lib/data/repository";
 import { can } from "@/lib/permissions";
 import { formatDateSA, formatZarCents, parseZarToCents, todaySAST } from "@/lib/format";
-import type { PayBasis, Worker, WorkerRoleType } from "@/lib/domain/types";
+import type { PayBasis, PayRule, Worker, WorkerRoleType } from "@/lib/domain/types";
+import { PayRuleFormDialog } from "@/components/PayRuleFormDialog";
+import { RoleMaintenanceDialog } from "@/components/RoleMaintenanceDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -72,15 +73,10 @@ function WorkersPage() {
   const [rType, setRType] = React.useState<WorkerRoleType>("road_worker");
   const [rSharesCrew, setRSharesCrew] = React.useState(true);
 
+  const [selectedRoleId, setSelectedRoleId] = React.useState<string | null>(null);
   const [ruleDialog, setRuleDialog] = React.useState(false);
   const [prRoleId, setPrRoleId] = React.useState("");
-  const [prBasis, setPrBasis] = React.useState<PayBasis>("daily");
-  const [prRateRand, setPrRateRand] = React.useState("");
-  const [prHours, setPrHours] = React.useState("9");
-  const [prDays, setPrDays] = React.useState("5");
-  const [prFrom, setPrFrom] = React.useState(todaySAST());
-  const [prConfirmed, setPrConfirmed] = React.useState(false);
-  const [prNotes, setPrNotes] = React.useState("");
+  const [editingRule, setEditingRule] = React.useState<PayRule | null>(null);
 
   const [overrideDialog, setOverrideDialog] = React.useState(false);
   const [ovWorkerId, setOvWorkerId] = React.useState("");
@@ -144,37 +140,6 @@ function WorkersPage() {
       setRName("");
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not create role."),
-  });
-
-  const ruleMutation = useMutation({
-    mutationFn: async () => {
-      const cents = parseZarToCents(prRateRand);
-      if (cents === null || cents <= 0) throw new Error("Enter a positive ZAR base rate.");
-      return createPayRule(session!, {
-        workerRoleId: prRoleId,
-        payBasis: prBasis,
-        baseRateCents: cents,
-        normalHoursPerDay: Number(prHours),
-        normalWorkdaysPerWeek: Number(prDays),
-        weekdayOtHourlyCents: null,
-        saturdayRateCents: null,
-        sundayRateCents: null,
-        publicHolidayRateCents: null,
-        weeklyProrationPolicy: prBasis === "weekly" ? "full_week_entitlement" : "none",
-        effectiveFrom: prFrom,
-        effectiveTo: null,
-        isConfirmed: prConfirmed,
-        notes: prNotes,
-      });
-    },
-    onSuccess: () => {
-      invalidate();
-      toast.success("Effective-dated pay rule added.");
-      setRuleDialog(false);
-      setPrRateRand("");
-      setPrNotes("");
-    },
-    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not add pay rule."),
   });
 
   const closeRuleMutation = useMutation({
@@ -381,6 +346,7 @@ function WorkersPage() {
                   </Button>
                   <Button
                     onClick={() => {
+                      setEditingRule(null);
                       setPrRoleId(roles[0]?.id ?? "");
                       setRuleDialog(true);
                     }}
@@ -399,13 +365,22 @@ function WorkersPage() {
                 return (
                   <Card key={role.id}>
                     <CardHeader className="pb-2">
-                      <div className="flex items-center justify-between">
-                        <CardTitle className="text-base">{role.name}</CardTitle>
-                        <Badge variant="outline">{role.roleType.replace(/_/g, " ")}</Badge>
-                      </div>
-                      <CardDescription className="text-xs">
-                        {role.sharesCrewSchedule ? "Shares crew schedule" : "Separate schedule"}
-                      </CardDescription>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRoleId(role.id)}
+                        className="touch-target -mx-2 -my-1 flex w-[calc(100%+1rem)] items-start justify-between gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <div>
+                          <CardTitle className="text-base">{role.name}</CardTitle>
+                          <CardDescription className="text-xs">
+                            {role.sharesCrewSchedule ? "Shares crew schedule" : "Separate schedule"}
+                          </CardDescription>
+                        </div>
+                        <div className="flex items-center gap-1.5 pt-0.5">
+                          <Badge variant="outline">{role.roleType.replace(/_/g, " ")}</Badge>
+                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                        </div>
+                      </button>
                     </CardHeader>
                     <CardContent className="space-y-2">
                       {roleRules.length === 0 ? (
@@ -432,6 +407,12 @@ function WorkersPage() {
                               Effective {formatDateSA(pr.effectiveFrom)} to{" "}
                               {pr.effectiveTo ? formatDateSA(pr.effectiveTo) : "open"} ·{" "}
                               {pr.normalHoursPerDay}h/day, {pr.normalWorkdaysPerWeek}d/wk
+                            </p>
+                            <p className="text-muted-foreground">
+                              OT/hr: {pr.weekdayOtHourlyCents ? formatZarCents(pr.weekdayOtHourlyCents) : "—"} ·
+                              Sat: {pr.saturdayRateCents ? formatZarCents(pr.saturdayRateCents) : "—"} ·
+                              Sun: {pr.sundayRateCents ? formatZarCents(pr.sundayRateCents) : "—"} ·
+                              PH: {pr.publicHolidayRateCents ? formatZarCents(pr.publicHolidayRateCents) : "—"}
                             </p>
                             {pr.notes && <p className="text-muted-foreground">{pr.notes}</p>}
                             {canEditRates && pr.effectiveTo === null && (
@@ -649,66 +630,37 @@ function WorkersPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Add Pay Rule Dialog */}
-      <Dialog open={ruleDialog} onOpenChange={setRuleDialog}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader><DialogTitle>{en.workers.addPayRule}</DialogTitle></DialogHeader>
-          <form onSubmit={(e) => { e.preventDefault(); ruleMutation.mutate(); }} className="space-y-3">
-            <div className="space-y-1">
-              <Label>Worker role</Label>
-              <Select value={prRoleId} onValueChange={setPrRoleId}>
-                <SelectTrigger className="touch-target"><SelectValue placeholder="Choose role" /></SelectTrigger>
-                <SelectContent>
-                  {roles.map((r) => (<SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1">
-                <Label>Pay basis</Label>
-                <Select value={prBasis} onValueChange={(v) => setPrBasis(v as PayBasis)}>
-                  <SelectTrigger className="touch-target"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="daily">Daily</SelectItem>
-                    <SelectItem value="hourly">Hourly</SelectItem>
-                    <SelectItem value="weekly">Weekly</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="pr-rate">Base rate (ZAR)</Label>
-                <Input id="pr-rate" inputMode="decimal" value={prRateRand} onChange={(e) => setPrRateRand(e.target.value)} className="touch-target tabular-money" required />
-              </div>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="space-y-1">
-                <Label htmlFor="pr-hrs">Hours/day</Label>
-                <Input id="pr-hrs" type="number" step="0.5" value={prHours} onChange={(e) => setPrHours(e.target.value)} className="touch-target" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="pr-days">Days/wk</Label>
-                <Input id="pr-days" type="number" value={prDays} onChange={(e) => setPrDays(e.target.value)} className="touch-target" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="pr-from">Effective from</Label>
-                <Input id="pr-from" type="date" value={prFrom} onChange={(e) => setPrFrom(e.target.value)} className="touch-target" />
-              </div>
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="pr-notes">Notes (OT/weekend terms)</Label>
-              <Input id="pr-notes" value={prNotes} onChange={(e) => setPrNotes(e.target.value)} className="touch-target" />
-            </div>
-            <div className="flex items-center gap-2">
-              <Checkbox id="pr-conf" checked={prConfirmed} onCheckedChange={(v) => setPrConfirmed(Boolean(v))} />
-              <Label htmlFor="pr-conf">Admin-confirmed against SA employment terms</Label>
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => setRuleDialog(false)} className="touch-target">{en.common.cancel}</Button>
-              <Button type="submit" disabled={ruleMutation.isPending} className="touch-target">{en.common.save}</Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
+      {/* Role Maintenance Dialog */}
+      <RoleMaintenanceDialog
+        role={roles.find((r) => r.id === selectedRoleId) ?? null}
+        payRules={payRules.filter((r) => r.workerRoleId === selectedRoleId)}
+        canEditRates={canEditRates}
+        session={session}
+        onClose={() => setSelectedRoleId(null)}
+        onSaved={invalidate}
+        onAddRule={(roleId) => {
+          setEditingRule(null);
+          setPrRoleId(roleId);
+          setRuleDialog(true);
+        }}
+        onEditRule={(rule) => {
+          setEditingRule(rule);
+          setPrRoleId(rule.workerRoleId);
+          setRuleDialog(true);
+        }}
+        onCloseRule={(ruleId) => closeRuleMutation.mutate(ruleId)}
+      />
+
+      {/* Add / Edit Pay Rule Dialog */}
+      <PayRuleFormDialog
+        open={ruleDialog}
+        onOpenChange={setRuleDialog}
+        session={session}
+        roles={roles}
+        initialRoleId={prRoleId}
+        editingRule={editingRule}
+        onSaved={invalidate}
+      />
 
       {/* Request Rate Override Dialog */}
       <Dialog open={overrideDialog} onOpenChange={setOverrideDialog}>

@@ -77,6 +77,9 @@ export const en = {
     addWorker: "Add worker",
     addRole: "Add role",
     addPayRule: "Add rate version",
+    editPayRule: "Edit rate version",
+    manageRole: "Manage role & rates",
+    viewRole: "View role & rates",
     addAssignment: "Assign to job",
     requestRateChange: "Request rate change",
     unconfirmedWarning:

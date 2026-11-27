@@ -80,6 +80,54 @@ describe("Increment A effective-dated pay rules (T11 foundation)", () => {
     expect(okErr).toBeNull();
   });
 
+  it("validates optional overtime, weekend, and public holiday hourly rates and allows editing an existing rule", () => {
+    const negativeOtErr = validatePayRuleCandidate(
+      {
+        workerRoleId: "role-road",
+        baseRateCents: 27000,
+        normalHoursPerDay: 9,
+        normalWorkdaysPerWeek: 5,
+        weekdayOtHourlyCents: -500,
+        effectiveFrom: "2026-11-19",
+        effectiveTo: null,
+      },
+      [baseRule],
+    );
+    expect(negativeOtErr).toMatch(/weekday ot/i);
+
+    const zeroSatErr = validatePayRuleCandidate(
+      {
+        workerRoleId: "role-road",
+        baseRateCents: 27000,
+        normalHoursPerDay: 9,
+        normalWorkdaysPerWeek: 5,
+        saturdayRateCents: 0,
+        effectiveFrom: "2026-11-19",
+        effectiveTo: null,
+      },
+      [baseRule],
+    );
+    expect(zeroSatErr).toMatch(/saturday/i);
+
+    const editSelfOk = validatePayRuleCandidate(
+      {
+        id: "r1",
+        workerRoleId: "role-road",
+        baseRateCents: 25000,
+        normalHoursPerDay: 9,
+        normalWorkdaysPerWeek: 5,
+        weekdayOtHourlyCents: 5833,
+        saturdayRateCents: 5833,
+        sundayRateCents: 7778,
+        publicHolidayRateCents: 7778,
+        effectiveFrom: "2026-11-01",
+        effectiveTo: "2026-11-18",
+      },
+      [baseRule],
+    );
+    expect(editSelfOk).toBeNull();
+  });
+
   it("resolves old vs new rate across a midweek effective-date change", () => {
     const newRule: PayRule = {
       ...baseRule,

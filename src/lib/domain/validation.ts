@@ -26,6 +26,10 @@ export function validatePayRuleCandidate(
     baseRateCents: number;
     normalHoursPerDay: number;
     normalWorkdaysPerWeek: number;
+    weekdayOtHourlyCents?: number | null;
+    saturdayRateCents?: number | null;
+    sundayRateCents?: number | null;
+    publicHolidayRateCents?: number | null;
     effectiveFrom: string;
     effectiveTo: string | null;
   },
@@ -34,6 +38,17 @@ export function validatePayRuleCandidate(
   if (!candidate.workerRoleId) return "Select a worker role.";
   if (!Number.isInteger(candidate.baseRateCents) || candidate.baseRateCents <= 0) {
     return "Base rate must be a positive ZAR amount.";
+  }
+  const optionalRates: Array<[string, number | null | undefined]> = [
+    ["Weekday OT hourly rate", candidate.weekdayOtHourlyCents],
+    ["Saturday hourly rate", candidate.saturdayRateCents],
+    ["Sunday hourly rate", candidate.sundayRateCents],
+    ["Public holiday hourly rate", candidate.publicHolidayRateCents],
+  ];
+  for (const [label, cents] of optionalRates) {
+    if (cents !== undefined && cents !== null && (!Number.isInteger(cents) || cents <= 0)) {
+      return `${label} must be a positive ZAR amount or left blank.`;
+    }
   }
   if (candidate.normalHoursPerDay <= 0 || candidate.normalHoursPerDay > 24) {
     return "Normal hours per day must be between 0.5 and 24.";
