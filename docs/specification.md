@@ -1,0 +1,211 @@
+# WorkTrack — Product and technical specification
+Version 1.0 | 26 November 2026 | Build target: Lovable + self-hosted Linux VM
+
+## 1. Build mandate
+Build a working, persistent, multi-user progressive web application for a South African road-verge clearing business. This is not a landing page or a dashboard mockup. Every enabled action must work against persistent data, with validation, authorization and error states. Use synthetic demo data only in development. Build in the increments in section 20. Do not mark a feature complete until its acceptance tests pass. Do not introduce proprietary runtime dependencies without approval. The repository, migrations, documentation, tests and deployment configuration must be owned by the customer.
+
+### Objectives
+- Let the business owner assess a proposed road job, estimate its size and submit it for review before starting.
+- Make field reporting fast enough for a person with limited formal education and English as an additional language.
+- Calculate attendance, wages earned, payments, arrears, expenditure, progress, cash needs and loan balances automatically.
+- Give the remote management user timely, auditable information without treating reported figures as verified bank or payroll records.
+- Retain completed jobs as benchmarks for future jobs.
+
+## 2. Users and permissions
+Use invitation-only accounts; no public signup. A business is the security boundary. Memberships carry explicit roles; enforce permissions at database and server level, never just by hiding UI. Support multiple jobs within a business.
+
+| Function | Management/admin | Owner | Supervisor |
+|---|---|---|---|
+| Business settings, users and rates | Edit | View rates | No |
+| Job assessment | Edit/review | Create/edit drafts/submit | Capture assigned survey |
+| Approve scope, budget and changes | Yes | No | No |
+| Worker roster | Edit | Add workers/request rate changes | Assigned roster only |
+| Attendance, progress, safety | Edit/review | Capture/submit | Capture assigned jobs |
+| Expenses/receipts | Edit/review | Capture | Optional limited capture |
+| Payroll payments | Edit/reconcile | Record | No |
+| Cash, funding, loans | Edit/reconcile | View/record permitted transactions | No |
+| Weekly report | Review/approve/return | Submit | Draft inputs only |
+| Exports | All authorized | Own business operational reports | No financial export |
+
+Admin cannot silently change approved records. All corrections are versioned. Rate overrides require admin approval. Owner may report expenses already incurred even when approval was missing. Admin and owner can independently enter transfers, but a match must link them without duplication. Restrict private worker data and loan documents to authorized parties. No worker self-service in release 1.
+
+## 3. UX and navigation
+Mobile bottom navigation: Home, Work, Workers, Money, More. More contains Assess job, Truck check, Photos, Weekly report, Settings. Desktop sidebar: Overview, Assessments, Jobs, Workers, Payroll, Expenses, Cash flow, Loans, Vehicles, Reports, Settings. Mobile management views use cards and collapsible tables. Use plain language, icons plus labels, 44px minimum touch targets, large numeric inputs, accessible contrast and clear success/error messages. Avoid dense tables on owner mobile. Default job/date where safe. Use a short wizard with save-and-resume and a visible step count. No calculations required from owner. Show connection status, last sync and pending records; distinguish saved on phone from uploaded. Use English strings in translation files for later isiXhosa support. Dates display dd MMM yyyy, weeks Mon–Sun, timezone Africa/Johannesburg, ZAR. Never rely solely on color. Ask confirmation for irreversible actions. Show actual vs planned vs estimated vs unverified explicitly.
+
+### Screen inventory
+| Screen | Essential controls and behavior |
+|---|---|
+| Owner home | Active job, progress, today's truck check, quick add expense/progress, weekly report status, pending sync |
+| Assessment wizard | Route, sides, widths, difficulty, scope, photos, review/send |
+| Job detail | Approved scope, target dates, sections, payment milestones, work status |
+| Work entry | Date, section, verge, activity, start/end chainage or completed range, GPS, photos, save |
+| Team attendance | Mon–Sun daily work status, normal hours, OT, interruption reason, copy pattern to crew |
+| Worker exceptions | List inherited attendance; tap individual to change date-specific hours/absence, reason, reset |
+| Wage payments | Select workers, common amount, override exceptions, date/method/evidence, confirm totals |
+| Add expense | Category, amount, date, description, payment method, job, receipt/photo, missing-receipt reason |
+| Truck check | Select vehicle, odometer, OK/problem/not checked, stop-use warning, photo/comment |
+| Weekly report | Review completeness, progress, attendance, earnings, paid, cash costs, interruptions; submit |
+| Management dashboard | Job selector, planned vs actual, budget vs actual, payroll, cash forecast, loan, alerts |
+| Management review | Underlying records and attachments, questions, return/approve, revisions |
+| Admin configuration | Jobs, roles, rates, workers, categories, approval rules, notifications, assets, benchmark |
+| Cash/loan ledger | Inflows/outflows, match transfer, restricted funds, milestones, balance and due amounts |
+| Reports | Date/job filters, Excel/CSV/PDF export, worker statements, progress and cash reports |
+
+## 4. Job lifecycle
+Assessment draft → submitted → returned or approved → planned → active → work complete → customer accepted → financially closed. Support cancelled/on hold. Do not equate work complete with customer acceptance or receipt of payment. Job approval establishes immutable baseline revision; scope amendments require a reason, new revision and admin approval. Preserve original budget and dates. A job has customer, contract reference, contract value, VAT basis, road/area, planned and actual dates, work requirements, assigned staff/equipment, payment milestones, funding and opening cash allocation. Multiple jobs may run concurrently; prevent overlapping worker hours. Job closure checks unresolved wages, unpaid invoices, receipts and milestones, but distinguish closure of operations from outstanding debt.
+
+## 5. Initial site assessment (release 1)
+Owner can create assessment without an existing job. Wizard:
+1. Name the job/road and select road direction from start to end. Capture GPS start and end with timestamp and accuracy. Show marker on map and allow correction with reason. Optionally record route during survey with explicit start/stop, only when safe; no interaction while driving. Browser background GPS is not guaranteed, so support manual chainage and manual distance fallback. GPS permission denial must not block capture.
+2. Derive along-road distance using routing service or recorded polyline, not straight-line endpoint distance. Show proposed route and require confirmation; manual override with source and reason. Save original and accepted distance, source, geometry, accuracy metadata. If offline, queue route calculation or accept manual distance marked provisional.
+3. Choose single carriageway (two candidate verges) or dual carriageway (four candidate verges: outer A, inner A, inner B, outer B). Use visual diagram with tappable strips and fixed reference direction. Select one to four distinct work strips. Do not count shared median area twice; allow shared median as one measured strip. For variable road layout create sections with start/end chainage and individual strip selection.
+4. Capture clearing width in metres per strip, quick choices 1,2,3,5,10 or custom positive decimal. Unknown width flagged for review, not zero. Optional length override for discontinuous strips. Section ranges must not overlap for same strip unless distinct activity; support gaps.
+5. Difficulty compared with first completed job: Much easier 0.60; Easier 0.80; Similar 1.00; Harder 1.30; Much harder 1.60. Admin-editable defaults, snapshot at approval. Owner selects descriptions rather than multipliers. Reasons: thick grass, bushes, slopes, rocks, rubbish, ditches, manual clearing, difficult truck access, traffic, heavy waste. Photos and short notes optional except when admin requires them.
+6. Select work required per section: cutting, manual clearing, waste collection/removal, finishing, other. Admin confirms completion criteria and safety requirements. Capture photo evidence and any exclusions.
+7. Review calculated road length, verge length, area, difficulty and missing inputs. Submit to management. Admin can return, adjust with audit, choose resources, approve budget and create planned job.
+
+One-section quick path is default; advanced sections only when required. GPS coordinates are supporting evidence, not proof of completed work. No background employee tracking. Maps must show attribution and respect tile/routing provider terms. Do not use public demo routing endpoints for production without permitted usage.
+
+## 6. Sizing and planning calculations
+For each unique work strip: physical area m² = length metres × average width metres. Verge length = sum of unique strip lengths; road length = union of road chainage intervals, not sum across strips. Effort units = sum(area × difficulty multiplier). If work types differ from benchmark, admin may apply explicit additional work-type multiplier or separate productivity baseline; never automatically double count.
+Benchmark productivity = actual fully completed comparable area / productive road-worker-days (normal hours plus equivalent productive overtime hours / standard hours). Exclude cook/admin and nonproductive downtime. Record benchmark scope, source, version and confidence. First historical job: estimated 12 workers plus cook, R250/day and R500/week; productive days approximately 35–40 subject to reconciliation; R440,000 contract value reported; distance, area and verified costs unknown. Do not import unverified values as actuals. Use temporary illustrative 250 m²/worker-day only in demo or explicitly approved planning assumption.
+Required worker-days = effort units / baseline productivity. Planned productive crew days = ceil(worker-days / productive crew size). Calendar forecast uses working calendar, planned downtime/weather allowance and mobilization. Model extra work, overtime, differing staffing, holidays and nonproductive roles separately. Labour budget = scheduled attendance × applicable rates, weekly cook rules, overtime and applicable employer costs. Other budget: fuel, food, rent, equipment hire, maintenance, transport, safety, disposal, administration, contingency. Capital purchases and debt repayments are separate cash requirements; depreciation if configured is separate from cash. Estimated operating surplus = contract revenue on consistent VAT basis minus estimated operating costs; label exclusions and do not present as final tax profit. Forecast payment milestones and minimum cash needed. Admin may override estimates with reason; store calculated and approved values. Show cost per road km, verge km and m². Handle zero/unknown values without division by zero.
+
+## 7. Work progress and interruptions
+Use approved road chainage ranges, verge IDs and required activities. Capture daily or weekly work ranges manually or via GPS start/end snapped to approved route with user confirmation. One entry may cover multiple verges; expand into distinct records. Store reported date, activity, range, status, evidence, submitter, source and verification state. Merge overlapping intervals for progress calculations; no double counting. A strip interval counts as fully completed only where all required activities overlap as complete. Rework records incur cost but do not increase completed area. Allow partial activity completion with explicit stage status. Report weekly incremental and cumulative physical distance/area, fully completed scope, and effort-weighted percent = completed weighted area / approved total weighted area. Report both physical and effort progress. Planned vs actual progress uses approved schedule, not equal weekly increments unless plan says so. Forecast remaining effort using observed productive capacity and clearly flag insufficient history. Distinguish no work, partial, worked and unknown; interruptions have date, duration, affected crew/section, reason (rain, vehicle, equipment, fuel, customer, public holiday, other) and optional comment. Do not infer no work from missing reports. Display GPS accuracy, photo date, source and manual override. Require review of conflicting or out-of-scope entries.
+
+## 8. Workforce, rates and attendance
+Worker role templates: road worker, supervisor, driver, cook, admin, owner, other. Support daily/hourly/weekly pay; normal hours/day, normal workdays, weekday overtime hourly rate/multiplier, Saturday/Sunday/public holiday separate rules, weekly pay/proration policy, paid leave/absence rules, effective dates. Individual overrides with approval. Do not assume all roles share crew schedule. R250/day road worker and R500/week cook are initial proposed rates only; supervisor/driver/admin rates not established. No invented overtime rates in production. Admin must confirm legal/contractual rules, minimum wages, overtime and deductions before payroll approval; obtain South African employment advice where necessary. Nonworking days are not automatically payable for daily workers, subject to applicable law and agreed entitlements. Do not use app to waive statutory rights.
+Worker record: full name, optional contact, role, active/employment dates, job assignment dates, optional individual rate, opening arrears/advance with source. Restrict personal identifiers. Preserve former workers. Roles and rates versioned; split calculation by effective dates.
+Weekly capture defaults active assigned road workers to the confirmed team pattern, not blindly to 5 days. Owner taps days worked (Mon–Sun), records actual normal hours or full/half-day, weekday OT, weekend hours split Saturday/Sunday, public holidays, interruption reason. Allow simple weekly total OT only when allocation across days is unambiguous; otherwise require daily distribution for compliance and rate calculation. Copy prior week as draft, never automatically approve. Cook/admin may inherit separate pattern. Exceptions: individual date, absence, partial day, extra hours, override reason, reset to team. Team changes propagate only to non-overridden fields; preserve explicit exceptions. Validate assignment dates, hours within 24, no overlapping jobs, no negative hours, overtime not double counted, no unsupported work/pay rule. Flag missing attendance before submission.
+
+## 9. Payroll and arrears
+Calculate on server using decimal/integer cents; client preview must match server. Daily normal pay = agreed day rate × eligible fraction (or configured guaranteed minimum); hourly = normal hours × rate; weekly = configured weekly entitlement/proration. Add applicable OT/weekend/holiday pay using approved mutually exclusive pay rules; distinguish premium-only from total hourly rate and do not double count normal hours. Use deterministic cent rounding per pay component; retain pay-rule snapshot. Include approved adjustments and legal deductions if configured; no arbitrary deductions. Gross vs net payable separate. No automatic zero pay for unknown attendance. Example: 12 road workers × 5 days × R250 + R500 cook = R15,500; 4 days = R12,500 if full cook entitlement. A worker absent one day reduces regular earnings R250, absent other pay entitlements.
+Payroll earned, cash advanced by lender, cash paid by owner and worker arrears are separate. Worker balance = opening verified balance + approved net earnings + approved adjustments − allocated actual payments. Show provisional earnings separately. A negative balance is an advance/credit, not hidden. Payment capture: bulk select, common amount, exception amounts, date, method, reference, optional signed receipt/confirmation, allocation to weeks or oldest unpaid by default, preview then confirm. Partial and multiple payments supported. Use payment allocation table; cannot allocate more than payment amount; unapplied remainder is advance. Cash payment generates exactly one cash ledger posting; wages expense screen redirects to payroll payment flow. Payment evidence status reported/verified/disputed; do not label reported as verified. Worker statement lists week, days/hours, rate, earned, paid, adjustments, balance. Approved weeks immutable; correction via reversal/new revision and delta posting, never double post earnings.
+
+## 10. Expenses and evidence
+Owner taps category icon, enters amount (positive ZAR), date default today, job or business overhead, short description, method cash/bank/card/other, optional supplier, receipt photo(s). Categories configurable: fuel, food/water, wages (redirect), equipment purchase/hire/repair, vehicle hire/repair/service/tyres, rent/storage, supplies, safety, transport, admin, other. Fuel optional litres, price/litre, vehicle/machine and odometer; calculate unit cost when possible. Other requires description. Record incurred vs paid, supplier payable, partial settlement; simplest flow defaults paid now. Capital vs operating classification, VAT basis, job allocation and funding source reviewable. Expense request before purchase optional, configurable category/amount thresholds, admin approve/decline. Record actual expense regardless of approval, flag exception. Receipt missing requires reason; support second-hand seller note. File attachments private; compress images, retain readable receipts, timestamp and checksum. Review duplicate date/amount/reference warnings; never silently delete. Refunds and corrections linked to original.
+
+## 11. Financial ledger and loan
+Separate business cash accounts (bank, cash, restricted funding), transfers between accounts, external inflows/outflows, expenses incurred, payroll liabilities, customer receivables, loan liabilities. Use balanced postings or a transactional typed ledger with explicit accounts and immutable entries. Internal transfers net to zero across business. Cash balance = opening actual balances + posted receipts − posted payments, adjusted for account transfers; never count expected receipts as available. Record customer deposits/progress/final receipts, lender advances, government grants (restricted/unrestricted), owner contribution and asset sales. Each transaction has date, amount, account, classification, job if applicable, reference, source, evidence, status. Match admin-recorded advance to owner's receipt using shared transfer ID/reference and confirmation; do not post both. Bank statement import optional release 2, manual reconciliation release 1. Reconcile cash counted/bank balance vs ledger, show difference not fabricated adjustment.
+Loan account: opening agreed principal (candidate R256,900, not automatically verified; historic transfers include potential gifts). No interest or fees. First job repayment R0. Second job progress receipt expected 2–3 weeks after start; planned range R120k–R150k, exact agreed amount and due date (3 business days after receipt, subject to signed agreement). Final receipt minimum R100k or written agreed variation, capped at remaining balance. Government funds may reduce debt only if permitted; record restricted status and approval. Remaining balance = opening principal + approved new advances − verified/posted repayments and agreed adjustments. Do not include loan repayments in operating expenses or loan receipts as contract revenue. Record truck as asset and any agreed security document/status, not automatic legal lien. Alerts for receipt/repayment due, overdue, variance, cash impact. No automatic transfer of money or vehicle disposal; track obligations only. Avoid uploading actual agreement/worker data into Lovable development environment.
+
+## 12. Weekly reporting and approvals
+Week Monday–Sunday, date boundaries SAST; first/last week can be partial. One report per job/week with revisions. Auto-assemble daily entries, team attendance/exceptions, days/hours lost and reasons, progress, wages earned, wages paid, prior arrears, expenses incurred, cash spent, inflows, receipts missing, vehicle checks, issues and photos. Owner preview, completeness checks, submit; admin review, return with specific comments, approve. Approval locks snapshot and underlying payroll/financial reporting values; later entries/corrections use documented amendment workflow. Show draft/submitted/returned/approved status and history. Weekly report not a substitute for recording cash/expense transactions when they occur. Send reminder at configurable time, allow report with missing evidence only if explicitly marked and admin can return it. Generate PDF/Excel exports with source IDs, date range, timestamp, revision, status; worker statements restricted.
+
+## 13. Management dashboard and forecast
+Filters business/job/date, desktop and phone. KPI: road/verge/area complete, weighted progress vs plan, projected completion, productive worker-days, downtime, wages earned/paid/outstanding, total operating costs vs budget, capital expenditure, cash available (restricted separately), outstanding suppliers, customer receivables, loan balance, next payment, shortfall. Charts: weekly planned/actual completion, costs by category, earned vs paid, cash forecast. Drill down to supporting records. Avoid false precision when incomplete; label estimated/unreconciled. Forecast weekly opening unrestricted cash + expected receipts (base and delayed scenarios) − scheduled wages/costs/payables/capital/loan repayments = closing cash; include existing arrears once and avoid double counting costs already paid. Show earliest negative week and amount needed; runway based on expected outflows, not arbitrary historical average. Restricted funds not included unless eligible. User can alter assumptions without editing actuals. Separate operating profitability from cash and debt. Notify for cash shortfall before next payment, overdue report, progress variance, large/missing-receipt expenses, safety-critical defects, payment receipt and due loan repayment. Configurable thresholds and digest; deduplicate alerts, track read/ack. Email via configured SMTP, in-app notifications mandatory; push optional. No WhatsApp automation required in release 1.
+
+## 14. Vehicles and equipment
+Asset records: make/model, registration, VIN (restricted), owner, purchase cost, odometer, service intervals, licence/insurance expiry, assigned job, service/repair/fuel history. Daily pre-use checklist: oil, coolant, leaks, tyres, brakes/lights, warning lights, odometer. Each item OK / Problem / Not checked. Safety critical problem or unchecked critical item → prominent STOP DO NOT USE, notify owner/admin, mark asset unavailable until authorized resolution logged; never require unsafe operation to complete report. Record defect/photo, resolution and responsible person. No physical control of truck implied. Allow job activity with alternate safe asset. Equipment records for brush cutters etc. with optional maintenance checks and costs. Report actual fuel consumption using comparable fill-to-fill data; otherwise estimate label.
+
+## 15. Historical benchmark and import
+Provide admin CSV template/import with preview, mapping, duplicate detection, row errors and rollback; no direct import of unverified real data in demo. Separate historical estimates from actual records. Historical first-job assumptions listed in section 6; opening arrears and loan require mutual confirmation. Retrospective assessment allowed, flagged source. Capture actual productive worker-days, area, cost categories, duration, delays and benchmark confidence. Allow comparison across jobs by normalized effort, productivity and unit cost; never mix loan advances with job costs. Export data in open formats.
+
+## 16. Database contract
+Use UUID primary keys, business_id on tenant records, foreign keys that enforce same-business relationships, created_at/updated_at (UTC), created_by, revision and status where applicable. Monetary amounts integer ZAR cents or exact numeric, never binary float; geometry and distances may use numeric metres. Use check constraints and uniqueness; no cascade deletion of financial history. Use SQL migrations in source control and seed fixtures separately. Suggested tables (names may vary if equivalent constraints and API are documented):
+
+| Table | Core fields / relationships |
+|---|---|
+| businesses, memberships, profiles | business, auth user, role, active, invitation; job permissions |
+| jobs, job_revisions | customer, reference, contract cents, VAT basis, dates, lifecycle, approved revision |
+| assessments, road_sections, verge_strips | job/draft, route geometry/source, endpoints and accuracy, chainage, side, width, difficulty/version |
+| scope_activities, progress_entries | strip, required activity, interval, date, status, evidence, revision, verification |
+| benchmarks, budget_lines, plan_weeks | source job, confidence, productivity, cost category, assumptions, planned effort/cash |
+| worker_roles, pay_rules, workers, assignments | effective-dated role rates, override, calendar, worker/job membership |
+| team_days, attendance, interruptions | job/date, normal/OT hours by class, inherited/override flags, affected workers, reason |
+| payroll_runs, earnings, payroll_adjustments | worker/week, rules snapshot, gross/net cents, revision, approval |
+| wage_payments, wage_allocations | worker, posting ID, amount, evidence, allocated earnings and unallocated balance |
+| expense_categories, expense_requests, expenses, expense_settlements | category, incurred, paid, capex, supplier, amount, evidence, approval |
+| accounts, journal_entries, journal_lines | balanced posting, account, cents, source record, reversal ID, currency |
+| transfers, reconciliation_matches | external ref, payer/payee confirmation, ledger posting, reconciliation status |
+| payment_milestones, customer_receipts | job, expected/actual dates, cents, invoice/payment link |
+| funding_records, loans, loan_events | restriction, permitted uses, agreed principal, advances/repayments/adjustments |
+| assets, asset_checks, defects, services | vehicle/equipment, odometer, item results, stop-use state, closure evidence |
+| reports, report_revisions, approvals | job/week, status, snapshot, reviewer, comments, version |
+| attachments, attachment_links | private object key, mime, bytes, checksum, parent, uploader, evidence status |
+| notifications, notification_preferences, outbox | recipient, type, severity, deduplication key, delivery state |
+| audit_events, mutation_receipts | actor, business, object, action, changed fields, reason, timestamp, unique idempotency key |
+
+Use date-effective wage rules with no overlapping effective ranges. Unique team day per job/date; attendance per worker/job/date. Unique approved report revision per job/week. Unique ledger posting per source event. Ensure wage allocations cannot exceed payments via transactional checks. Implement financial mutations, approvals, payroll generation and correction via transactional server-side SQL functions or API; no direct arbitrary client writes to ledger or approved rows. Server computes aggregate progress and cash totals; client previews are not authoritative. Document API/RPC input, output, authorization, error codes and idempotency semantics. Use consistent RLS on all exposed tables/views/storage; security-definer functions must set safe search_path and explicitly check caller membership and permissions; revoke excess execution rights. Never expose database credentials or service-role keys to browser.
+
+## 17. Offline, sync and files
+Use PWA manifest, icons, service worker, HTTPS, responsive layout. Cache app shell and only permitted user-specific reference data; do not indiscriminately cache authenticated API responses. IndexedDB holds draft data, local photo blobs and mutation queue partitioned by user/business. Queue uses client UUID, idempotency key, base revision, timestamp and status. Sync on reconnection or manual retry; background sync is optional and not guaranteed across mobile browsers. Process dependencies (record before attachment link); retries exponential with bounded attempts and visible errors. Server acknowledges same key without duplicate financial posting. On revision conflict, show both versions and require resolution; no last-write-wins for payroll, expenses or scope. Allow offline draft capture of assessment, work, attendance, expense, truck check; require online authoritative submission/approval or visibly queue submission. Do not report successful submission until server confirms. Preserve drafts through restart; warn before logout if unsynced, offer safe sync or explicit discard. Clear protected local data on logout; define shared-device risk and local retention. Require session renewal before upload; never expose another user's drafts. Safety check failures display local stop-use warning immediately even offline; notification sends when connected. Store attachments in private bucket with signed short-lived URLs, allowlisted image/PDF types, size limits, server verification, no public bucket. Strip unnecessary photo metadata while retaining separately consented location evidence. Show pending photo upload vs completed.
+
+## 18. Security, operations and quality
+Invite-only authentication; password reset and owner-friendly onboarding; MFA for admin; rate limiting, session revocation, no default passwords or public admin endpoints. RLS tests include cross-business read/write and supervisor restrictions. Least privilege for storage, scheduled jobs and backup credentials. Validate all server inputs, escape exports to prevent CSV formula injection, protect against XSS and unsafe file uploads. Audit approvals, rate changes, financial postings, corrections and role changes; restrict audit log access. Minimize worker data and location collection, explain purpose, access and retention; support POPIA review, access requests and correction process. No continuous worker surveillance. Logs exclude passwords, tokens, full identity numbers and sensitive pay data. Dependency pinning, lint, typecheck, unit/integration/e2e tests, migration tests, security review before production. Target usable on inexpensive Android phones and limited mobile data; image compression, pagination, small initial payload, keyboard accessibility. Store dates UTC with SAST business calendar. Report latency, sync errors and failed notifications; monitoring and health endpoint. Nightly encrypted off-VM backups of DB, storage and config; proposed RPO 24h/RTO 8h, validate restore before launch, keep backup retention configurable. Financial records cannot be hard-deleted through ordinary UI; retention/legal requirements to be confirmed.
+
+## 19. Architecture and VM deployment
+Use React/TypeScript/Tailwind and standard Supabase client with configurable URL and public key. Prefer Lovable with independently controlled development Supabase project where supported; do not enable Lovable Cloud for production. If preview cannot connect to self-hosted backend, use a separate developer-controlled hosted Supabase project with synthetic data and deploy migrations to VM; never point Lovable at production worker or loan records. Confirm integration capability before creating project; if unsupported, generate portable frontend and migration code and finish integration outside Lovable. Production must run without Lovable services or credits. Self-host official Supabase Docker Compose stack (Postgres, Auth, Storage, API gateway and required services); avoid replacing it with plain Postgres unless equivalent services are explicitly implemented. Use version-pinned supported images, separate project names, named volumes and private Docker networks. VM resources to be checked against current Supabase requirements and existing app load; allow separate VM if insufficient RAM/disk. Do not assume root access or alter existing reverse proxy/apps. TLS at existing proxy; separate app and API subdomains or validated same-origin paths; configure auth site URL, redirect allowlist, CORS, SMTP, storage public URL, API gateway; keep DB/admin ports private. Firewall only required SSH/HTTPS/HTTP for TLS; restrict SSH keys and admin tools. Secrets server-side in protected env files or secret store; commit .env.example only. Frontend build-time public URL/key variables documented; no service role key in VITE variables. Health/readiness checks and persistent storage. GitHub private repository, protected main, separate staging and production configuration, reproducible npm ci/build/test. Ship frontend multi-stage Dockerfile (build then static web server with SPA fallback), compose file for frontend and documented compatible Supabase compose configuration, proxy example, env template, migration scripts, backup/restore scripts, deployment README. Do not expose Supabase Studio publicly.
+
+Deployment sequence (commands illustrative, repository must supply exact runnable equivalents):
+1. Connect Lovable project to customer-controlled private GitHub repo; confirm code and SQL migrations are committed. Develop against isolated dev backend.
+2. Inventory VM OS, disk/RAM, reverse proxy, network, domain and backup destination. Provision isolated staging environment. Install supported Docker Engine/Compose if not present.
+3. Configure official self-hosted Supabase stack and generate unique secrets per environment; set SMTP and redirect URLs. Start backend; verify health and private ports.
+4. Apply versioned migrations using documented Supabase CLI or SQL runner with server-side credentials, test repeatability and upgrade from previous revision. Seed test data only in staging. Create first admin by secure invite/bootstrap; disable bootstrap afterwards.
+5. Set frontend public backend URL/key, build image, start app container, configure proxy and HTTPS; verify SPA refresh and mobile install. Test auth, RLS, private files, offline sync, backup/restore and critical business scenarios.
+6. Deploy approved git commit to production with backups before migration; separate prod database/storage/secrets. Register users by invite. Import confirmed opening balances and approved Job 2 setup. Smoke test, record release tag and migration version. Document rollback (previous app image if schema compatible; restore verified backup if required, with data-loss window explicitly understood).
+7. Schedule backups and server-side reminders using supported scheduler/worker with idempotent jobs; monitor storage and certificate expiry. Keep deployment runbook independent of Lovable.
+
+## 20. Implementation increments and deliverables
+All increments are required for release 1 unless marked later; build and test sequentially, not a single visual prototype. At end of each increment provide changed files, migration IDs, tests run/results, limitations and manual steps. Ask before changing architecture or removing requirements.
+- A: foundation, navigation, auth, RLS, business/job configuration, roles/rates/roster, synthetic fixtures, VM skeleton.
+- B: assessment wizard, route/manual fallback, strips/width/difficulty, benchmark, sizing/budget, approval and scope versions.
+- C: daily progress/manual chainage, interruptions, weekly team attendance/exceptions, payroll calculation and worker statements.
+- D: wage payments/allocations, expenses/receipts, balanced cash ledger, income, funding, loan and milestones, forecast and reconciliation.
+- E: weekly report review/approval/revisions, dashboard drilldowns, exports, truck checks/defects and notifications.
+- F: offline queue and sync/conflict tests (design offline from A, implement per module), security review, mobile field test, backup/restore, staging and production deployment documentation.
+Later: richer GPS route tracking/interactive progress maps, automatic bank import, WhatsApp integration, tender generation, advanced equipment inventory, translations beyond English. Basic GPS assessment and progress capture are not deferred.
+
+## 21. Acceptance tests (minimum release gate)
+| ID | Scenario | Expected result |
+|---|---|---|
+| T01 | 10 km, two 5m strips | Road 10 km, verge 20 km, 100,000 m² |
+| T02 | Four 5m strips, 10 km, distinct areas | 200,000 m²; shared median overlap rejected/corrected |
+| T03 | Same area, harder factor 1.30 | 130% baseline effort; physical area unchanged |
+| T04 | GPS denied or offline | Manual distance saved with source; no invented coordinates |
+| T05 | Cut 0–500m then 250–750m | 750m unique cutting, not 1,000m |
+| T06 | Required cutting/removal; cutting 750m, removal 500m within it | Only 500m fully completed |
+| T07 | 12 workers × 5 days × R250 plus cook R500 | R15,500 gross before extras |
+| T08 | Team loses one unpaid day; cook full weekly pay | R12,500; individual exceptions retained |
+| T09 | One worker absent one further unpaid day | R12,250 under same rules |
+| T10 | Individual weekday/Saturday/Sunday hours with approved test rates | Correct distinct rate classes, no duplicate normal hours |
+| T11 | Rate changes midweek | Old and new rates applied by effective dates; history intact |
+| T12 | R15,000 lender advance; no wages paid | Cash and debt rise; worker arrears unchanged |
+| T13 | R9,120 paid to 12 workers, R500 cook | Exactly R9,620 cash outflow and reduction in allocated wage balances; no duplicate expense |
+| T14 | Owner and admin report same transfer | Match creates one posting; evidence retained |
+| T15 | Opening loan R256,900; R135,000 then R100,000 repayments | R21,900 remaining; no interest; no operational expense posting |
+| T16 | Restricted grant received | Excluded from unrestricted cash and debt repayment unless eligible |
+| T17 | Opening R49,900; weekly cash cost R28,500; next receipt after three weeks | R35,600 shortfall before receipt, assuming no other movements |
+| T18 | Submitted report returned, amended and approved | History retained, locked snapshot, no duplicated payroll |
+| T19 | Offline expense replayed twice | One expense and one posting; pending/confirmed status accurate |
+| T20 | Concurrent edit with stale revision | Conflict shown; no silent overwrite |
+| T21 | Supervisor requests loan/pay data or another business's records | Denied at API/database/storage layer |
+| T22 | Critical truck oil issue offline | Immediate local stop-use message; queued alert, asset unavailable on sync |
+| T23 | Missing receipt | Reason recorded and review flag; amount still included in actual cash if paid |
+| T24 | Scope changed after approval | New revision with approval, prior baseline visible |
+| T25 | Unknown attendance | Flag incomplete, no automatic zero or five-day payroll approval |
+| T26 | Install on actual Android; lose network; restart; reconnect | Drafts/photos persist, sync once, clear status |
+| T27 | Restore backup to isolated VM | Database, private attachments and authentication verified |
+| T28 | Production build served with Lovable unavailable | All essential app features continue using own VM services |
+
+Add tests for decimal rounding, partial/advance wages, holiday calendar, restricted funds, refund/reversal, duplicate intervals, invalid input, expired session, unauthorized approval and account switching. Use synthetic fixtures; owner field usability trial is a release gate.
+
+## 22. Decisions to confirm before production
+- Actual VM distribution/resources, reverse proxy, domain, SMTP and backup location; no credentials in prompts/repository.
+- Actual second job contract, payment amounts, dates, road scope, width, work acceptance criteria and VAT basis.
+- Actual staff list, legal employment terms, normal hours, overtime/weekend/holiday rates, cook weekly entitlement and any paid nonworking days.
+- First job route/area and verified worker-days, final wage payments, costs and agreed opening loan principal.
+- Map/routing provider permitted usage and fees; owner language/usability test; retention and privacy policy.
+- Admin approval rules and notification preferences. Suggested thresholds may be configured, not assumed as agreed.
+
+## 23. Build handover checklist
+Deliver complete repo, README, architecture diagram, schema/ERD, migrations, fixtures, API documentation, Dockerfile/Compose/proxy/env examples, test suite and actual test report, deployment and rollback runbook, backup/restore procedure, short owner user guide (plain English with screenshots), admin guide, known limitations and future backlog. No placeholders in enabled production functionality. Mark incomplete functionality disabled and identify it explicitly. Never claim successful deployment/testing unless performed.
+
+## 24. Reference documentation
+- Lovable documentation: https://docs.lovable.dev/ (verify current integration and export instructions before project creation).
+- Supabase self-hosting: https://supabase.com/docs/guides/self-hosting
+- Supabase Docker deployment: https://supabase.com/docs/guides/self-hosting/docker
+- Lovable/Supabase backend portability note: https://supabase.com/kb/troubleshooting/cant-access-supabase-project-lovable-cloud
+
+This document specifies the application; it does not represent implemented or deployed software.

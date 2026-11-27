@@ -28,3 +28,12 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+## WorkTrack Architecture Rules
+
+- **Portable Supabase client.** Use `@supabase/supabase-js` configured via `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (or `VITE_SUPABASE_PUBLISHABLE_KEY`) in `src/lib/supabase.ts` so the app runs identically on self-hosted Docker Compose Supabase and external Supabase with zero Lovable Cloud lock-in.
+- **Dual data adapter.** Route all Increment A+ reads/writes through `src/lib/data/repository.ts`: live Supabase when env vars are set, or a clearly badged local synthetic dev store when no backend is configured yet.
+- **Integer cents for money.** Store and compute all ZAR monetary values as integer cents (`bigint` in PostgreSQL, integer `number` in TypeScript); never use floating-point rand values for persistence or calculations.
+- **Tenant & role boundary.** Enforce `business_id` isolation and `admin` / `owner` / `supervisor` permissions in both PostgreSQL RLS policies (`supabase/migrations/`) and client/server guards (`src/lib/permissions.ts`).
+- **Portable SQL migrations.** Keep customer-owned SQL migrations in `db/migrations/` and synthetic dev seeds in `db/seed/` so they remain independent of Lovable Cloud and run cleanly via `deploy/scripts/migrate.sh` on self-hosted Supabase.
+- **Translation-ready strings.** Keep user-facing UI strings in `src/i18n/en.ts` so isiXhosa (`xh`) can be added without refactoring components.

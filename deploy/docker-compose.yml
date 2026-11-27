@@ -1,0 +1,27 @@
+name: worktrack
+
+# WorkTrack application container for self-hosted Linux VM.
+# Runs alongside the official self-hosted Supabase Docker Compose stack
+# (https://supabase.com/docs/guides/self-hosting/docker).
+# Do NOT expose Postgres (5432) or Supabase Studio publicly.
+
+services:
+  worktrack-web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+    restart: unless-stopped
+    ports:
+      - "${WORKTRACK_BIND_HOST:-127.0.0.1}:${WORKTRACK_BIND_PORT:-3080}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    networks:
+      - worktrack-internal
+
+networks:
+  worktrack-internal:
+    driver: bridge
