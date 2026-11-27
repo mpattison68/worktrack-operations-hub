@@ -25,6 +25,7 @@ import {
 import { en } from "@/i18n/en";
 import { useWorkTrackAuth } from "@/lib/auth-context";
 import { can } from "@/lib/permissions";
+import { NotificationsPopover } from "@/components/NotificationsPopover";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
@@ -72,8 +73,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     { to: "/expenses" as const, label: en.nav.expenses, icon: Receipt, active: true, visible: true },
     { to: "/cash-flow" as const, label: en.nav.cashFlow, icon: Wallet, active: true, visible: can(session.role, "loans.view") },
     { to: "/loans" as const, label: en.nav.loans, icon: Landmark, active: true, visible: can(session.role, "loans.view") },
-    { to: "/vehicles" as const, label: en.nav.vehicles, icon: Truck, active: false, visible: true },
-    { to: "/reports" as const, label: en.nav.reports, icon: BarChart3, active: false, visible: true },
+    { to: "/vehicles" as const, label: en.nav.vehicles, icon: Truck, active: true, visible: true },
+    { to: "/reports" as const, label: en.nav.reports, icon: BarChart3, active: true, visible: true },
     { to: "/settings" as const, label: en.nav.settings, icon: Settings, active: true, visible: can(session.role, "business.view") },
   ].filter((item) => item.visible);
 
@@ -197,6 +198,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
 
             <div className="flex items-center gap-2">
+              <NotificationsPopover />
               <Badge variant="secondary" className="text-xs">
                 {en.roles[session.role]}
               </Badge>

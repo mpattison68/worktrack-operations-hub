@@ -128,6 +128,38 @@ export const en = {
     wagesRedirectNotice: "Wage payments must be recorded in Payroll / Wage payments so worker balances update without creating a duplicate expense.",
     accessDenied: "Supervisors do not have access to wage payments, cash balances, or loan accounts.",
   },
+  reports: {
+    title: "Weekly reports & exports",
+    subtitle: "Auto-assembled Mon–Sun job reports with review, return, revision lock, and safe exports.",
+    tabWeekly: "Weekly report",
+    tabExports: "Exports",
+    submitButton: "Submit weekly report",
+    approveButton: "Approve & lock report",
+    returnButton: "Return with comments",
+    amendButton: "Start amendment revision",
+    missingEvidenceNotice:
+      "Some receipts or truck checks are missing. Confirm acknowledgement to submit anyway — Admin can still return this report.",
+    supervisorNotice:
+      "Supervisors can view operational progress, interruptions, and truck checks, and export operational reports only. Payroll and financial totals are restricted.",
+  },
+  vehicles: {
+    title: "Vehicles, equipment & pre-use checks",
+    subtitle: "Daily safety checks, immediate STOP DO NOT USE defect control, and service/fuel history.",
+    tabChecks: "Daily truck check",
+    tabRegister: "Assets & service",
+    tabDefects: "Open defects",
+    stopDoNotUse: "STOP — DO NOT USE THIS VEHICLE",
+    stopDoNotUseDetail:
+      "A safety-critical item has a problem or was not checked. This asset is marked unavailable until an authorised Admin or Owner logs a resolution. Use an alternate safe vehicle.",
+    vinRestricted: "Restricted (Admin / Owner only)",
+  },
+  notifications: {
+    title: "Alerts & notifications",
+    empty: "No active alerts for your business.",
+    acknowledge: "Acknowledge",
+    markRead: "Mark read",
+    settingsTitle: "Notification thresholds & reminders",
+  },
   common: {
     save: "Save",
     cancel: "Cancel",

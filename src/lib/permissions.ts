@@ -29,6 +29,15 @@ export type PermissionAction =
   | "payroll.reconcile"
   | "loans.view"
   | "loans.edit"
+  | "reports.submit"
+  | "reports.approve"
+  | "exports.financial"
+  | "exports.operational"
+  | "vehicles.manage"
+  | "vehicles.check"
+  | "vehicles.resolve_defect"
+  | "vehicles.view_vin"
+  | "notifications.configure"
   | "audit.view";
 
 const ROLE_PERMISSIONS: Record<AppRole, ReadonlySet<PermissionAction>> = {
@@ -57,6 +66,15 @@ const ROLE_PERMISSIONS: Record<AppRole, ReadonlySet<PermissionAction>> = {
     "payroll.reconcile",
     "loans.view",
     "loans.edit",
+    "reports.submit",
+    "reports.approve",
+    "exports.financial",
+    "exports.operational",
+    "vehicles.manage",
+    "vehicles.check",
+    "vehicles.resolve_defect",
+    "vehicles.view_vin",
+    "notifications.configure",
     "audit.view",
   ]),
   owner: new Set<PermissionAction>([
@@ -73,12 +91,21 @@ const ROLE_PERMISSIONS: Record<AppRole, ReadonlySet<PermissionAction>> = {
     "payroll.view",
     "payroll.record_payment",
     "loans.view",
+    "reports.submit",
+    "exports.financial",
+    "exports.operational",
+    "vehicles.manage",
+    "vehicles.check",
+    "vehicles.resolve_defect",
+    "vehicles.view_vin",
   ]),
   supervisor: new Set<PermissionAction>([
     "jobs.view_assigned",
     "assessments.create",
     "workers.view_assigned",
     "attendance.capture",
+    "exports.operational",
+    "vehicles.check",
   ]),
 };
 

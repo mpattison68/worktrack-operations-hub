@@ -27,9 +27,9 @@ function MorePage() {
   const items = [
     { to: "/jobs" as const, label: en.nav.jobs, icon: Briefcase, badge: "Active", visible: true },
     { to: "/assessments" as const, label: en.nav.assessJob, icon: MapPin, badge: "Active", visible: true },
-    { to: "/vehicles" as const, label: en.nav.truckCheck, icon: Truck, badge: "Increment E", visible: true },
-    { to: "/photos" as const, label: en.nav.photos, icon: Camera, badge: "Increment B/E", visible: true },
-    { to: "/reports" as const, label: en.nav.weeklyReport, icon: FileText, badge: "Increment E", visible: true },
+    { to: "/vehicles" as const, label: en.nav.truckCheck, icon: Truck, badge: "Active", visible: true },
+    { to: "/photos" as const, label: en.nav.photos, icon: Camera, badge: "Increment F", visible: true },
+    { to: "/reports" as const, label: en.nav.weeklyReport, icon: FileText, badge: "Active", visible: true },
     { to: "/settings" as const, label: en.nav.settings, icon: Settings, badge: "Active", visible: can(session.role, "business.view") },
   ].filter((i) => i.visible);
 
