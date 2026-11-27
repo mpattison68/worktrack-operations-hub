@@ -11,4 +11,5 @@
 - [x] Increment A: Unit & integration tests + browser verification
 - [x] Increment B: 7-step assessment wizard, GPS/manual fallback, tappable verge diagram, sizing/benchmark/budget, admin approval & immutable scope revisions, portable SQL migration, T01–T04/T24 tests
 - [x] Increment B Extension: Multi-waypoint GPS route capture, interactive Leaflet map editing, full-precision geodesic calculations, offline waypoint sync queue, `assessment_route_points` SQL migration, weekly-progress route projection helpers, updated spec/docs, and 10 acceptance tests
-- [ ] Increment C–F: Held at Increment B boundary pending user review
+- [x] Increment C: Daily progress (interval union, full-completion overlap, rework exclusion, GPS snapping), interruptions log, Mon–Sun weekly attendance with individual exceptions, integer-cent payroll (midweek splits, OT/weekend classes, immutable approved revisions, worker statements), portable SQL migration (`202611270004`), and T05–T11/T21/T25 acceptance tests
+- [ ] Increment D–F: Held at Increment C boundary pending user review

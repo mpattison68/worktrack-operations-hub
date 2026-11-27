@@ -5,6 +5,8 @@ import {
   Briefcase,
   CheckCircle2,
   Clock,
+  CreditCard,
+  HardHat,
   Settings,
   Users,
 } from "lucide-react";
@@ -74,12 +76,26 @@ function OverviewPage() {
             {session.role === "admin" ? en.nav.overview : en.nav.home}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Signed in as {session.fullName} ({en.roles[session.role]}). Increments A &amp; B are
+            Signed in as {session.fullName} ({en.roles[session.role]}). Increments A, B &amp; C are
             active.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button asChild className="touch-target gap-2">
+            <Link to="/work">
+              <HardHat className="h-4 w-4" />
+              {en.nav.work}
+            </Link>
+          </Button>
+          {can(session.role, "payroll.view") && (
+            <Button asChild variant="outline" className="touch-target gap-2">
+              <Link to="/payroll">
+                <CreditCard className="h-4 w-4" />
+                {en.nav.payroll}
+              </Link>
+            </Button>
+          )}
+          <Button asChild variant="outline" className="touch-target gap-2">
             <Link to="/jobs">
               <Briefcase className="h-4 w-4" />
               {en.nav.jobs}
@@ -153,10 +169,10 @@ function OverviewPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardDescription>Release increment</CardDescription>
-            <CardTitle className="text-3xl">B</CardTitle>
+            <CardTitle className="text-3xl">C</CardTitle>
           </CardHeader>
           <CardContent className="text-xs text-muted-foreground">
-            Increments C–F disabled until review
+            Increments D–F disabled until review
           </CardContent>
         </Card>
       </div>
@@ -211,7 +227,7 @@ function OverviewPage() {
             {[
               { id: "A", label: "Foundation, auth, RBAC, jobs, roles/rates/roster, migrations & VM skeleton", done: true },
               { id: "B", label: "Site assessment wizard, routes, strips, sizing & scope revisions", done: true },
-              { id: "C", label: "Daily progress, interruptions, weekly attendance & payroll", done: false },
+              { id: "C", label: "Daily progress, interruptions, weekly attendance & payroll", done: true },
               { id: "D", label: "Wage payments, expenses, balanced cash ledger, loans & forecast", done: false },
               { id: "E", label: "Weekly reports, dashboard drilldowns, exports & truck checks", done: false },
               { id: "F", label: "Offline queue/sync, security audit, Android trial & VM rollout", done: false },

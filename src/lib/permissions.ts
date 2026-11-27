@@ -22,7 +22,9 @@ export type PermissionAction =
   | "workers.view_assigned"
   | "workers.add"
   | "workers.edit"
+  | "attendance.capture"
   | "payroll.view"
+  | "payroll.approve"
   | "payroll.record_payment"
   | "payroll.reconcile"
   | "loans.view"
@@ -48,7 +50,9 @@ const ROLE_PERMISSIONS: Record<AppRole, ReadonlySet<PermissionAction>> = {
     "workers.view_assigned",
     "workers.add",
     "workers.edit",
+    "attendance.capture",
     "payroll.view",
+    "payroll.approve",
     "payroll.record_payment",
     "payroll.reconcile",
     "loans.view",
@@ -65,6 +69,7 @@ const ROLE_PERMISSIONS: Record<AppRole, ReadonlySet<PermissionAction>> = {
     "workers.view_all",
     "workers.view_assigned",
     "workers.add",
+    "attendance.capture",
     "payroll.view",
     "payroll.record_payment",
     "loans.view",
@@ -73,6 +78,7 @@ const ROLE_PERMISSIONS: Record<AppRole, ReadonlySet<PermissionAction>> = {
     "jobs.view_assigned",
     "assessments.create",
     "workers.view_assigned",
+    "attendance.capture",
   ]),
 };
 
