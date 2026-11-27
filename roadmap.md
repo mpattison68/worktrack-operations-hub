@@ -10,4 +10,5 @@
 - [x] Increment A: Self-hosted Linux VM deployment skeleton (`Dockerfile`, `deploy/`)
 - [x] Increment A: Unit & integration tests + browser verification
 - [x] Increment B: 7-step assessment wizard, GPS/manual fallback, tappable verge diagram, sizing/benchmark/budget, admin approval & immutable scope revisions, portable SQL migration, T01–T04/T24 tests
+- [x] Increment B Extension: Multi-waypoint GPS route capture, interactive Leaflet map editing, full-precision geodesic calculations, offline waypoint sync queue, `assessment_route_points` SQL migration, weekly-progress route projection helpers, updated spec/docs, and 10 acceptance tests
 - [ ] Increment C–F: Held at Increment B boundary pending user review

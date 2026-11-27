@@ -4,13 +4,13 @@ import {
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
-  MapPin,
   Plus,
   Save,
   Send,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useWorkTrackAuth } from "@/lib/auth-context";
 import {
   DIFFICULTY_FACTORS,
   DIFFICULTY_REASON_LABELS,
@@ -19,14 +19,26 @@ import {
   type DifficultyLevel,
   type DifficultyReason,
   type DistanceSource,
-  type GpsPoint,
   type RoadSectionInput,
+  type RoutePoint,
   type ScopeActivity,
   type SiteAssessment,
   type VergeSide,
 } from "@/lib/domain/assessment-types";
 import { calculateAssessmentSizing, validateAssessmentSections } from "@/lib/domain/assessment-calc";
+import {
+  calculateRouteMetrics,
+  extractStartEndGps,
+  formatDistanceMeters,
+  hydrateRoutePoints,
+} from "@/lib/domain/route-geometry";
+import {
+  enqueueOfflineWaypoint,
+  getOfflineWaypoints,
+} from "@/lib/data/offline-waypoint-queue";
 import { CarriagewayDiagram } from "@/components/CarriagewayDiagram";
+import { RouteCapturePanel } from "@/components/RouteCapturePanel";
+import { can } from "@/lib/permissions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -46,6 +58,7 @@ interface AssessmentWizardProps {
     },
     submit: boolean,
   ) => Promise<void>;
+  onSyncOffline?: (assessmentId: string) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -67,7 +80,8 @@ function makeDefaultSection(distanceMeters: number): RoadSectionInput {
   };
 }
 
-export function AssessmentWizard({ initial, onSave, onCancel }: AssessmentWizardProps) {
+export function AssessmentWizard({ initial, onSave, onSyncOffline, onCancel }: AssessmentWizardProps) {
+  const { session } = useWorkTrackAuth();
   const [step, setStep] = React.useState(1);
   const [saving, setSaving] = React.useState(false);
 
@@ -78,8 +92,14 @@ export function AssessmentWizard({ initial, onSave, onCancel }: AssessmentWizard
     initial?.directionDescription ?? "Start to End",
   );
 
-  const [startGps, setStartGps] = React.useState<GpsPoint | null>(initial?.startGps ?? null);
-  const [endGps, setEndGps] = React.useState<GpsPoint | null>(initial?.endGps ?? null);
+  const [routePoints, setRoutePoints] = React.useState<RoutePoint[]>(() =>
+    hydrateRoutePoints(
+      initial?.routePoints,
+      initial?.startGps ?? null,
+      initial?.endGps ?? null,
+      initial?.createdByEmail ?? "",
+    ),
+  );
   const [gpsUnavailableReason, setGpsUnavailableReason] = React.useState(
     initial?.gpsUnavailableReason ?? "",
   );
@@ -89,19 +109,46 @@ export function AssessmentWizard({ initial, onSave, onCancel }: AssessmentWizard
   const [distanceKm, setDistanceKm] = React.useState(
     initial ? String(initial.acceptedDistanceMeters / 1000) : "10",
   );
+  const [roadNetworkKm, setRoadNetworkKm] = React.useState(
+    initial?.roadNetworkDistanceMeters ? String(initial.roadNetworkDistanceMeters / 1000) : "",
+  );
   const [distanceOverrideReason, setDistanceOverrideReason] = React.useState(
     initial?.distanceOverrideReason ?? "",
+  );
+  const [manualOverrideActive, setManualOverrideActive] = React.useState(
+    Boolean(initial?.distanceOverrideReason && initial?.waypointMeasuredDistanceMeters),
   );
   const [distanceProvisional, setDistanceProvisional] = React.useState(
     initial?.distanceProvisional ?? false,
   );
+  const [offlinePendingCount, setOfflinePendingCount] = React.useState(0);
 
   const [sections, setSections] = React.useState<RoadSectionInput[]>(
     initial?.sections.length ? initial.sections : [makeDefaultSection(10000)],
   );
   const [exclusions, setExclusions] = React.useState(initial?.exclusions ?? "");
 
-  const acceptedDistanceMeters = Math.max(0, Math.round((Number(distanceKm) || 0) * 1000));
+  const routeMetrics = React.useMemo(() => calculateRouteMetrics(routePoints), [routePoints]);
+  const waypointMeasuredMeters =
+    routePoints.length >= 2 ? routeMetrics.totalDistanceMeters : null;
+  const roadNetworkDistanceMeters =
+    roadNetworkKm.trim() && Number(roadNetworkKm) > 0 ? Number(roadNetworkKm) * 1000 : null;
+
+  // Full-precision distance: use exact geodesic metres when gps_route is active without manual override
+  const acceptedDistanceMeters =
+    distanceSource === "gps_route" && !manualOverrideActive && waypointMeasuredMeters !== null && waypointMeasuredMeters > 0
+      ? waypointMeasuredMeters
+      : Math.max(0, (Number(distanceKm) || 0) * 1000);
+
+  const canEditRoute =
+    initial?.status === "approved"
+      ? Boolean(session && can(session.role, "scope.approve"))
+      : true;
+
+  React.useEffect(() => {
+    if (!initial?.id) return;
+    setOfflinePendingCount(getOfflineWaypoints(initial.id).length);
+  }, [initial?.id, routePoints.length]);
 
   // Keep single-section quick path synced to accepted distance
   React.useEffect(() => {
@@ -114,30 +161,17 @@ export function AssessmentWizard({ initial, onSave, onCancel }: AssessmentWizard
     }
   }, [acceptedDistanceMeters, sections.length]);
 
-  const captureGps = (target: "start" | "end") => {
-    if (typeof navigator === "undefined" || !("geolocation" in navigator)) {
-      setGpsUnavailableReason("Browser geolocation unavailable — manual distance used.");
-      toast.info("GPS unavailable. Enter road distance manually.");
-      return;
+  const handleRoutePointsChange = (nextPoints: RoutePoint[], capturedOfflinePoint?: RoutePoint) => {
+    setRoutePoints(nextPoints);
+    const nextMetrics = calculateRouteMetrics(nextPoints);
+    if (nextPoints.length >= 2 && nextMetrics.totalDistanceMeters > 0 && !manualOverrideActive) {
+      setDistanceSource("gps_route");
+      setDistanceKm((nextMetrics.totalDistanceMeters / 1000).toFixed(4));
     }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const point: GpsPoint = {
-          lat: Number(pos.coords.latitude.toFixed(6)),
-          lng: Number(pos.coords.longitude.toFixed(6)),
-          accuracyMeters: Math.round(pos.coords.accuracy),
-          capturedAt: new Date().toISOString(),
-        };
-        if (target === "start") setStartGps(point);
-        else setEndGps(point);
-        toast.success(`GPS ${target} point captured (±${point.accuracyMeters}m).`);
-      },
-      () => {
-        setGpsUnavailableReason("GPS permission denied or signal unavailable — manual distance used.");
-        toast.info("GPS denied/unavailable. Continue using manual chainage or manual distance.");
-      },
-      { enableHighAccuracy: true, timeout: 8000 },
-    );
+    if (capturedOfflinePoint && initial?.id && session) {
+      enqueueOfflineWaypoint(initial.id, session.businessId, capturedOfflinePoint);
+      setOfflinePendingCount(getOfflineWaypoints(initial.id).length);
+    }
   };
 
   const updateSection = (idx: number, patch: Partial<RoadSectionInput>) => {
@@ -210,12 +244,18 @@ export function AssessmentWizard({ initial, onSave, onCancel }: AssessmentWizard
       setStep(2);
       return;
     }
+    if (manualOverrideActive && !distanceOverrideReason.trim()) {
+      toast.error("Provide a reason for overriding the GPS-measured road distance.");
+      setStep(2);
+      return;
+    }
     if (validationErrors.length > 0) {
       toast.error(validationErrors[0]!);
       return;
     }
     setSaving(true);
     try {
+      const { startGps, endGps } = extractStartEndGps(routePoints);
       await onSave(
         {
           ...(initial?.id ? { id: initial.id } : {}),
@@ -228,9 +268,13 @@ export function AssessmentWizard({ initial, onSave, onCancel }: AssessmentWizard
           revision: initial?.revision ?? 1,
           startGps,
           endGps,
+          routePoints,
+          waypointMeasuredDistanceMeters: waypointMeasuredMeters,
+          roadNetworkDistanceMeters,
           gpsUnavailableReason: gpsUnavailableReason.trim() || null,
           distanceSource,
-          originalDistanceMeters: initial?.originalDistanceMeters ?? acceptedDistanceMeters,
+          originalDistanceMeters:
+            waypointMeasuredMeters ?? initial?.originalDistanceMeters ?? acceptedDistanceMeters,
           acceptedDistanceMeters,
           distanceOverrideReason: distanceOverrideReason.trim() || null,
           distanceProvisional,
@@ -272,7 +316,7 @@ export function AssessmentWizard({ initial, onSave, onCancel }: AssessmentWizard
           </div>
         </div>
         <CardTitle className="text-xl">
-          {step === 1 && "1. Road name, direction & GPS points"}
+          {step === 1 && "1. Road name, direction & GPS route"}
           {step === 2 && "2. Confirm along-road distance"}
           {step === 3 && "3. Road type & verge strips"}
           {step === 4 && "4. Clearing widths (metres)"}
@@ -304,27 +348,59 @@ export function AssessmentWizard({ initial, onSave, onCancel }: AssessmentWizard
               <Label htmlFor="as-dir">Travel direction (Start → End)</Label>
               <Input id="as-dir" value={direction} onChange={(e) => setDirection(e.target.value)} placeholder="e.g. Heading North from town bridge" className="touch-target" />
             </div>
-            <div className="rounded-md border border-border bg-muted/40 p-3 space-y-3">
-              <p className="text-xs font-semibold">Optional GPS start & end points (capture only when safely stopped)</p>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Button type="button" variant="outline" onClick={() => captureGps("start")} className="touch-target gap-2">
-                  <MapPin className="h-4 w-4" />
-                  {startGps ? `Start: ${startGps.lat}, ${startGps.lng}` : "Capture GPS start"}
-                </Button>
-                <Button type="button" variant="outline" onClick={() => captureGps("end")} className="touch-target gap-2">
-                  <MapPin className="h-4 w-4" />
-                  {endGps ? `End: ${endGps.lat}, ${endGps.lng}` : "Capture GPS end"}
-                </Button>
-              </div>
-              {gpsUnavailableReason && (
-                <p className="text-xs text-status-warn">{gpsUnavailableReason}</p>
-              )}
-            </div>
+            <RouteCapturePanel
+              points={routePoints}
+              editable={canEditRoute}
+              userEmail={session?.email ?? ""}
+              userId={session?.userId ?? null}
+              gpsUnavailableReason={gpsUnavailableReason}
+              offlinePendingCount={offlinePendingCount}
+              onChangePoints={handleRoutePointsChange}
+              onGpsUnavailable={setGpsUnavailableReason}
+              onSaveRoute={() => handlePersist(false)}
+              {...(initial?.id && onSyncOffline
+                ? { onSyncOffline: () => void onSyncOffline(initial.id) }
+                : {})}
+              saving={saving}
+            />
           </div>
         )}
 
         {step === 2 && (
           <div className="space-y-4">
+            {waypointMeasuredMeters !== null && (
+              <div className="rounded-md border border-border bg-muted/40 p-3 space-y-2 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span>
+                    GPS waypoint-measured distance ({routePoints.length} points):{" "}
+                    <strong className="text-sm tabular-money">
+                      {formatDistanceMeters(waypointMeasuredMeters)}
+                    </strong>{" "}
+                    <span className="text-muted-foreground">({waypointMeasuredMeters.toFixed(2)} m)</span>
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={manualOverrideActive ? "default" : "outline"}
+                    onClick={() => {
+                      const next = !manualOverrideActive;
+                      setManualOverrideActive(next);
+                      if (!next) {
+                        setDistanceSource("gps_route");
+                        setDistanceKm((waypointMeasuredMeters / 1000).toFixed(4));
+                      }
+                    }}
+                    className="h-8 text-xs"
+                  >
+                    {manualOverrideActive ? "Use GPS waypoint distance" : "Override contractual distance"}
+                  </Button>
+                </div>
+                <p className="text-muted-foreground">
+                  Sum of geodesic segment distances along all captured waypoints (never straight-line start-to-end only).
+                </p>
+              </div>
+            )}
+
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <Label>Distance source</Label>
@@ -333,20 +409,46 @@ export function AssessmentWizard({ initial, onSave, onCancel }: AssessmentWizard
                   <SelectContent>
                     <SelectItem value="manual_distance">Manual road distance (odometer / map)</SelectItem>
                     <SelectItem value="manual_chainage">Manual road chainage markers</SelectItem>
-                    <SelectItem value="gps_route">GPS along-road route</SelectItem>
+                    <SelectItem value="gps_route">GPS waypoint route</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-1">
-                <Label htmlFor="as-km">Along-road distance (km)</Label>
-                <Input id="as-km" type="number" step="0.1" min="0.1" value={distanceKm} onChange={(e) => setDistanceKm(e.target.value)} className="touch-target tabular-money text-lg font-semibold" />
+                <Label htmlFor="as-km">Accepted road distance (km)</Label>
+                <Input
+                  id="as-km"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={distanceKm}
+                  onChange={(e) => {
+                    setDistanceKm(e.target.value);
+                    if (waypointMeasuredMeters !== null) setManualOverrideActive(true);
+                  }}
+                  className="touch-target tabular-money text-lg font-semibold"
+                />
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              Accepted road distance: <strong>{acceptedDistanceMeters.toLocaleString()} metres</strong> ({(acceptedDistanceMeters / 1000).toFixed(2)} km). Straight-line GPS distance is never substituted silently.
+              Accepted road distance: <strong>{formatDistanceMeters(acceptedDistanceMeters)}</strong> ({acceptedDistanceMeters.toFixed(2)} m). Straight-line GPS distance is never substituted silently.
             </p>
             <div className="space-y-1">
-              <Label htmlFor="as-dist-reason">Source / override note (optional)</Label>
+              <Label htmlFor="as-road-net-km">Road-network routed distance (km, optional — stored separately)</Label>
+              <Input
+                id="as-road-net-km"
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="Optional reference from road routing"
+                value={roadNetworkKm}
+                onChange={(e) => setRoadNetworkKm(e.target.value)}
+                className="touch-target tabular-money"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="as-dist-reason">
+                {manualOverrideActive ? "Reason for contractual distance override (required)" : "Source / override note (optional)"}
+              </Label>
               <Input id="as-dist-reason" value={distanceOverrideReason} onChange={(e) => setDistanceOverrideReason(e.target.value)} placeholder="e.g. Measured by bakkie odometer from km 0 to km 10" className="touch-target" />
             </div>
             <div className="flex items-center gap-2">

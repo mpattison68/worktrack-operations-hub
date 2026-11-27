@@ -5,6 +5,32 @@ export type DistanceSource =
   | "manual_chainage"
   | "manual_distance";
 
+export type RoutePointType = "start" | "waypoint" | "end";
+
+export type RouteCaptureMethod = "gps" | "manual_map";
+
+export interface RoutePoint {
+  id: string;
+  /** Stable client-generated idempotency key used for offline sync deduplication */
+  clientPointId: string;
+  pointType: RoutePointType;
+  sequenceNumber: number;
+  latitude: number;
+  longitude: number;
+  gpsAccuracyMeters: number | null;
+  capturedAt: string;
+  capturedByUserId: string | null;
+  capturedByEmail: string;
+  captureMethod: RouteCaptureMethod;
+}
+
+export interface OfflineWaypointQueueItem {
+  assessmentId: string;
+  businessId: string;
+  point: RoutePoint;
+  queuedAt: string;
+}
+
 export type CarriagewayType = "single" | "dual";
 
 export type VergeSide =
@@ -155,6 +181,9 @@ export interface AssessmentRevisionSnapshot {
   approvedByEmail: string;
   reason: string;
   acceptedDistanceMeters: number;
+  waypointMeasuredDistanceMeters?: number | null;
+  roadNetworkDistanceMeters?: number | null;
+  routePoints?: RoutePoint[];
   roadLengthMeters: number;
   vergeLengthMeters: number;
   physicalAreaSqm: number;
@@ -181,6 +210,12 @@ export interface SiteAssessment {
   // GPS & distance metadata (null when GPS denied/offline — never invented)
   startGps: GpsPoint | null;
   endGps: GpsPoint | null;
+  /** Ordered multi-waypoint road route (start, intermediate waypoints, end). Backward-compatible with startGps/endGps. */
+  routePoints?: RoutePoint[];
+  /** Full-precision geodesic sum of consecutive routePoints in metres. Kept separate from road-network routing. */
+  waypointMeasuredDistanceMeters?: number | null;
+  /** Optional separate road-network routed distance in metres (never substituted for waypoint distance). */
+  roadNetworkDistanceMeters?: number | null;
   gpsUnavailableReason: string | null;
   distanceSource: DistanceSource;
   originalDistanceMeters: number;

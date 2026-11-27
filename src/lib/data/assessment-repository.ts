@@ -5,8 +5,20 @@ import { calculateAssessmentSizing, validateAssessmentSections } from "@/lib/dom
 import type {
   AssessmentRevisionSnapshot,
   BenchmarkProfile,
+  RoutePoint,
   SiteAssessment,
 } from "@/lib/domain/assessment-types";
+import {
+  calculateRouteMetrics,
+  extractStartEndGps,
+  hydrateRoutePoints,
+  resequenceRoutePoints,
+} from "@/lib/domain/route-geometry";
+import {
+  clearOfflineWaypointsForAssessment,
+  getOfflineWaypoints,
+  mergeRoutePointsDeduplicated,
+} from "@/lib/data/offline-waypoint-queue";
 import type { AuthSession } from "@/lib/domain/types";
 import { assertBusinessBoundary, can } from "@/lib/permissions";
 
@@ -108,7 +120,27 @@ function loadStore(): SyntheticAssessmentStore {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(init));
       return init;
     }
-    return JSON.parse(raw) as SyntheticAssessmentStore;
+    const parsed = JSON.parse(raw) as SyntheticAssessmentStore;
+    return {
+      benchmarks: parsed.benchmarks ?? [],
+      assessments: (parsed.assessments ?? []).map((a) => {
+        const routePoints = hydrateRoutePoints(
+          a.routePoints,
+          a.startGps,
+          a.endGps,
+          a.createdByEmail,
+        );
+        const metrics = calculateRouteMetrics(routePoints);
+        return {
+          ...a,
+          routePoints,
+          waypointMeasuredDistanceMeters:
+            a.waypointMeasuredDistanceMeters ??
+            (routePoints.length >= 2 ? metrics.totalDistanceMeters : null),
+          roadNetworkDistanceMeters: a.roadNetworkDistanceMeters ?? null,
+        };
+      }),
+    };
   } catch {
     return createInitialAssessments();
   }
@@ -155,6 +187,22 @@ export async function listAssessmentsAndBenchmarks(
         revision: a.revision,
         startGps: a.start_gps,
         endGps: a.end_gps,
+        routePoints: hydrateRoutePoints(
+          (a.route_points_json as RoutePoint[] | null) ?? undefined,
+          a.start_gps,
+          a.end_gps,
+          a.created_by_email ?? "",
+        ),
+        waypointMeasuredDistanceMeters:
+          a.waypoint_measured_distance_meters !== null &&
+          a.waypoint_measured_distance_meters !== undefined
+            ? Number(a.waypoint_measured_distance_meters)
+            : null,
+        roadNetworkDistanceMeters:
+          a.road_network_distance_meters !== null &&
+          a.road_network_distance_meters !== undefined
+            ? Number(a.road_network_distance_meters)
+            : null,
         gpsUnavailableReason: a.gps_unavailable_reason,
         distanceSource: a.distance_source,
         originalDistanceMeters: Number(a.original_distance_meters),
@@ -208,6 +256,19 @@ export async function saveAssessmentDraft(
     throw new Error(sectionErrors[0]!);
   }
 
+  const normalizedRoutePoints = input.routePoints?.length
+    ? resequenceRoutePoints(input.routePoints, !input.routePoints.some((p) => p.pointType === "end"))
+    : hydrateRoutePoints(undefined, input.startGps, input.endGps, session.email);
+  const derivedStartEnd = normalizedRoutePoints.length
+    ? extractStartEndGps(normalizedRoutePoints)
+    : { startGps: input.startGps, endGps: input.endGps };
+  const routeMetrics = calculateRouteMetrics(normalizedRoutePoints);
+  const waypointMeasuredDistanceMeters =
+    normalizedRoutePoints.length >= 2
+      ? routeMetrics.totalDistanceMeters
+      : (input.waypointMeasuredDistanceMeters ?? null);
+  const roadNetworkDistanceMeters = input.roadNetworkDistanceMeters ?? null;
+
   const now = new Date().toISOString();
 
   if (isSupabaseConfigured && supabase) {
@@ -220,8 +281,11 @@ export async function saveAssessmentDraft(
       direction_description: input.directionDescription.trim(),
       status: input.status,
       revision: input.revision,
-      start_gps: input.startGps,
-      end_gps: input.endGps,
+      start_gps: derivedStartEnd.startGps,
+      end_gps: derivedStartEnd.endGps,
+      route_points_json: normalizedRoutePoints,
+      waypoint_measured_distance_meters: waypointMeasuredDistanceMeters,
+      road_network_distance_meters: roadNetworkDistanceMeters,
       gps_unavailable_reason: input.gpsUnavailableReason,
       distance_source: input.distanceSource,
       original_distance_meters: input.originalDistanceMeters,
@@ -258,10 +322,41 @@ export async function saveAssessmentDraft(
           .single();
     const { data, error } = await query;
     if (error || !data) throw new Error(error?.message ?? "Failed to save assessment.");
+
+    // Persist normalized route points into assessment_route_points
+    await supabase
+      .from("assessment_route_points")
+      .delete()
+      .eq("assessment_id", data.id)
+      .eq("business_id", session.businessId);
+    if (normalizedRoutePoints.length > 0) {
+      const rows = normalizedRoutePoints.map((pt) => ({
+        business_id: session.businessId,
+        assessment_id: data.id,
+        client_point_id: pt.clientPointId,
+        point_type: pt.pointType,
+        sequence_number: pt.sequenceNumber,
+        latitude: pt.latitude,
+        longitude: pt.longitude,
+        gps_accuracy_meters: pt.gpsAccuracyMeters,
+        captured_at: pt.capturedAt,
+        captured_by: pt.capturedByUserId ?? session.userId,
+        captured_by_email: pt.capturedByEmail || session.email,
+        capture_method: pt.captureMethod,
+      }));
+      const { error: ptErr } = await supabase.from("assessment_route_points").insert(rows);
+      if (ptErr) throw new Error(ptErr.message);
+    }
+
     return {
       ...input,
       id: data.id,
       businessId: data.business_id,
+      startGps: derivedStartEnd.startGps,
+      endGps: derivedStartEnd.endGps,
+      routePoints: normalizedRoutePoints,
+      waypointMeasuredDistanceMeters,
+      roadNetworkDistanceMeters,
       createdByEmail: data.created_by_email ?? session.email,
       createdAt: data.created_at,
       updatedAt: data.updated_at,
@@ -282,6 +377,11 @@ export async function saveAssessmentDraft(
       ...input,
       id: existing.id,
       businessId: existing.businessId,
+      startGps: derivedStartEnd.startGps,
+      endGps: derivedStartEnd.endGps,
+      routePoints: normalizedRoutePoints,
+      waypointMeasuredDistanceMeters,
+      roadNetworkDistanceMeters,
       updatedAt: now,
     };
     store.assessments[idx] = updated;
@@ -293,6 +393,11 @@ export async function saveAssessmentDraft(
     ...input,
     id: newId(),
     businessId: session.businessId,
+    startGps: derivedStartEnd.startGps,
+    endGps: derivedStartEnd.endGps,
+    routePoints: normalizedRoutePoints,
+    waypointMeasuredDistanceMeters,
+    roadNetworkDistanceMeters,
     createdByEmail: session.email,
     createdAt: now,
     updatedAt: now,
@@ -300,6 +405,68 @@ export async function saveAssessmentDraft(
   store.assessments.unshift(created);
   saveStore(store);
   return created;
+}
+
+/**
+ * Synchronise offline-captured waypoints for an assessment without creating duplicate records.
+ * Deduplicates using clientPointId and recalculates waypoint distance and dependent single-section sizing.
+ */
+export async function syncOfflineWaypoints(
+  session: AuthSession,
+  assessmentId: string,
+): Promise<{ assessment: SiteAssessment; syncedCount: number }> {
+  const queued = getOfflineWaypoints(assessmentId);
+  const { assessments } = await listAssessmentsAndBenchmarks(session);
+  const target = assessments.find((a) => a.id === assessmentId);
+  if (!target) throw new Error("Assessment not found.");
+  assertBusinessBoundary(session, target.businessId, "assessment");
+
+  if (queued.length === 0) {
+    return { assessment: target, syncedCount: 0 };
+  }
+
+  const existingPoints = target.routePoints ?? [];
+  const existingIds = new Set(existingPoints.map((p) => p.clientPointId));
+  const newCount = queued.filter((q) => !existingIds.has(q.point.clientPointId)).length;
+
+  const mergedPoints = mergeRoutePointsDeduplicated(
+    existingPoints,
+    queued.map((q) => q.point),
+  );
+  const metrics = calculateRouteMetrics(mergedPoints);
+  const useMeasured =
+    target.distanceSource === "gps_route" &&
+    !target.distanceOverrideReason &&
+    metrics.totalDistanceMeters > 0;
+  const nextAccepted = useMeasured ? metrics.totalDistanceMeters : target.acceptedDistanceMeters;
+  const nextSections =
+    useMeasured && target.sections.length === 1
+      ? [
+          {
+            ...target.sections[0]!,
+            startChainageMeters: 0,
+            endChainageMeters: nextAccepted,
+          },
+        ]
+      : target.sections;
+
+  const saved = await saveAssessmentDraft(session, {
+    ...target,
+    routePoints: mergedPoints,
+    waypointMeasuredDistanceMeters:
+      mergedPoints.length >= 2 ? metrics.totalDistanceMeters : null,
+    originalDistanceMeters:
+      metrics.totalDistanceMeters > 0 ? metrics.totalDistanceMeters : target.originalDistanceMeters,
+    acceptedDistanceMeters: nextAccepted,
+    sections: nextSections,
+  });
+
+  clearOfflineWaypointsForAssessment(
+    assessmentId,
+    queued.map((q) => q.point.clientPointId),
+  );
+
+  return { assessment: saved, syncedCount: newCount };
 }
 
 export async function returnAssessment(
@@ -361,12 +528,23 @@ export async function approveAssessmentScope(
   }
 
   const nextRevision = assessment.revisions.length + 1;
+  const normalizedPoints = assessment.routePoints?.length
+    ? resequenceRoutePoints(assessment.routePoints)
+    : hydrateRoutePoints(undefined, assessment.startGps, assessment.endGps, assessment.createdByEmail);
+  const routeMetrics = calculateRouteMetrics(normalizedPoints);
+
   const snapshot: AssessmentRevisionSnapshot = {
     revision: nextRevision,
     approvedAt: new Date().toISOString(),
     approvedByEmail: session.email,
     reason: approvalReason.trim() || "Initial baseline scope approval",
     acceptedDistanceMeters: assessment.acceptedDistanceMeters,
+    waypointMeasuredDistanceMeters:
+      normalizedPoints.length >= 2
+        ? routeMetrics.totalDistanceMeters
+        : (assessment.waypointMeasuredDistanceMeters ?? null),
+    roadNetworkDistanceMeters: assessment.roadNetworkDistanceMeters ?? null,
+    routePoints: JSON.parse(JSON.stringify(normalizedPoints)),
     roadLengthMeters: sizing.roadLengthMeters,
     vergeLengthMeters: sizing.vergeLengthMeters,
     physicalAreaSqm: sizing.physicalAreaSqm,

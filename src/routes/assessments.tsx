@@ -9,7 +9,9 @@ import {
   listAssessmentsAndBenchmarks,
   returnAssessment,
   saveAssessmentDraft,
+  syncOfflineWaypoints,
 } from "@/lib/data/assessment-repository";
+import { getOfflineWaypoints } from "@/lib/data/offline-waypoint-queue";
 import { calculateAssessmentSizing } from "@/lib/domain/assessment-calc";
 import type { SiteAssessment } from "@/lib/domain/assessment-types";
 import { can } from "@/lib/permissions";
@@ -56,11 +58,49 @@ function AssessmentsPage() {
     await queryClient.invalidateQueries({ queryKey: ["jobs"] });
   };
 
+  // Automatically synchronise any queued offline waypoints when connectivity returns
+  React.useEffect(() => {
+    if (!session || typeof window === "undefined") return;
+    const runSync = async () => {
+      if (!navigator.onLine) return;
+      const queued = getOfflineWaypoints();
+      const assessmentIds = [...new Set(queued.map((q) => q.assessmentId))];
+      for (const id of assessmentIds) {
+        try {
+          const res = await syncOfflineWaypoints(session, id);
+          if (res.syncedCount > 0) {
+            toast.success(`Synced ${res.syncedCount} offline waypoint(s).`);
+            await refresh();
+          }
+        } catch {
+          // Keep queued for next retry
+        }
+      }
+    };
+    void runSync();
+    window.addEventListener("online", runSync);
+    return () => window.removeEventListener("online", runSync);
+  }, [session?.userId, session?.businessId]);
+
   if (mode === "wizard") {
     return (
       <AssessmentWizard
         initial={selected}
         onCancel={() => setMode(selected ? "review" : "list")}
+        onSyncOffline={async (assessmentId) => {
+          try {
+            const res = await syncOfflineWaypoints(session, assessmentId);
+            setSelected(res.assessment);
+            await refresh();
+            toast.success(
+              res.syncedCount > 0
+                ? `Synced ${res.syncedCount} offline waypoint(s).`
+                : "All waypoints already synced.",
+            );
+          } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Could not sync offline waypoints.");
+          }
+        }}
         onSave={async (data, submit) => {
           try {
             const saved = await saveAssessmentDraft(session, data);
@@ -181,6 +221,9 @@ function AssessmentsPage() {
                     <div className="flex shrink-0 gap-1.5">
                       <Badge variant="outline" className="capitalize">{a.status}</Badge>
                       <Badge variant="secondary">Rev {a.revision}</Badge>
+                      {a.routePoints && a.routePoints.length > 0 && (
+                        <Badge variant="secondary">{a.routePoints.length} pts</Badge>
+                      )}
                     </div>
                   </div>
                 </CardHeader>

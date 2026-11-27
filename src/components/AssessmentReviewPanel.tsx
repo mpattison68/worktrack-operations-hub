@@ -8,9 +8,17 @@ import {
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useWorkTrackAuth } from "@/lib/auth-context";
 import { calculateAssessmentSizing } from "@/lib/domain/assessment-calc";
-import type { BudgetLineInput, SiteAssessment } from "@/lib/domain/assessment-types";
+import type { BudgetLineInput, RoutePoint, SiteAssessment } from "@/lib/domain/assessment-types";
+import {
+  calculateRouteMetrics,
+  extractStartEndGps,
+  formatDistanceMeters,
+  hydrateRoutePoints,
+} from "@/lib/domain/route-geometry";
 import { formatDateSA, formatZarCents, parseZarToCents } from "@/lib/format";
+import { RouteCapturePanel } from "@/components/RouteCapturePanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -38,12 +46,31 @@ export function AssessmentReviewPanel({
   onEditScope,
   onClose,
 }: AssessmentReviewPanelProps) {
+  const { session } = useWorkTrackAuth();
   const [productivity, setProductivity] = React.useState(String(assessment.benchmarkProductivitySqm));
   const [crewSize, setCrewSize] = React.useState(String(assessment.productiveCrewSize));
   const [dailyRateRand, setDailyRateRand] = React.useState((assessment.roadWorkerDailyRateCents / 100).toFixed(2));
   const [cookRateRand, setCookRateRand] = React.useState((assessment.cookWeeklyRateCents / 100).toFixed(2));
   const [contractRand, setContractRand] = React.useState((assessment.contractValueCents / 100).toFixed(2));
   const [budgetLines, setBudgetLines] = React.useState<BudgetLineInput[]>(assessment.budgetLines);
+  const [routePoints, setRoutePoints] = React.useState<RoutePoint[]>(() =>
+    hydrateRoutePoints(
+      assessment.routePoints,
+      assessment.startGps,
+      assessment.endGps,
+      assessment.createdByEmail,
+    ),
+  );
+  const [sections, setSections] = React.useState(assessment.sections);
+  const [acceptedDistanceMeters, setAcceptedDistanceMeters] = React.useState(
+    assessment.acceptedDistanceMeters,
+  );
+  const [distanceOverrideReason, setDistanceOverrideReason] = React.useState(
+    assessment.distanceOverrideReason ?? "",
+  );
+  const [overrideKmInput, setOverrideKmInput] = React.useState(
+    (assessment.acceptedDistanceMeters / 1000).toFixed(3),
+  );
 
   const [newLineCat, setNewLineCat] = React.useState<BudgetLineInput["category"]>("fuel");
   const [newLineLabel, setNewLineLabel] = React.useState("");
@@ -54,6 +81,60 @@ export function AssessmentReviewPanel({
   const [approvalReason, setApprovalReason] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
+  React.useEffect(() => {
+    setRoutePoints(
+      hydrateRoutePoints(
+        assessment.routePoints,
+        assessment.startGps,
+        assessment.endGps,
+        assessment.createdByEmail,
+      ),
+    );
+    setSections(assessment.sections);
+    setAcceptedDistanceMeters(assessment.acceptedDistanceMeters);
+    setDistanceOverrideReason(assessment.distanceOverrideReason ?? "");
+    setOverrideKmInput((assessment.acceptedDistanceMeters / 1000).toFixed(3));
+  }, [assessment]);
+
+  const routeMetrics = React.useMemo(() => calculateRouteMetrics(routePoints), [routePoints]);
+  const waypointMeasuredMeters =
+    routePoints.length >= 2 ? routeMetrics.totalDistanceMeters : assessment.waypointMeasuredDistanceMeters ?? null;
+
+  const handleReviewRouteChange = (nextPoints: RoutePoint[]) => {
+    setRoutePoints(nextPoints);
+    const nextMetrics = calculateRouteMetrics(nextPoints);
+    if (nextPoints.length >= 2 && nextMetrics.totalDistanceMeters > 0) {
+      setAcceptedDistanceMeters(nextMetrics.totalDistanceMeters);
+      setOverrideKmInput((nextMetrics.totalDistanceMeters / 1000).toFixed(3));
+      if (sections.length === 1) {
+        setSections([
+          {
+            ...sections[0]!,
+            startChainageMeters: 0,
+            endChainageMeters: nextMetrics.totalDistanceMeters,
+          },
+        ]);
+      }
+    }
+  };
+
+  const applyManualDistanceOverride = () => {
+    const meters = Number(overrideKmInput) * 1000;
+    if (!Number.isFinite(meters) || meters <= 0) {
+      toast.error("Enter a positive contractual distance in kilometres.");
+      return;
+    }
+    if (!distanceOverrideReason.trim()) {
+      toast.error("Provide a reason for the contractual distance override.");
+      return;
+    }
+    setAcceptedDistanceMeters(meters);
+    if (sections.length === 1) {
+      setSections([{ ...sections[0]!, startChainageMeters: 0, endChainageMeters: meters }]);
+    }
+    toast.success("Contractual distance override applied to sizing calculations.");
+  };
+
   const dailyCents = parseZarToCents(dailyRateRand) ?? 0;
   const cookCents = parseZarToCents(cookRateRand) ?? 0;
   const contractCents = parseZarToCents(contractRand) ?? 0;
@@ -61,7 +142,7 @@ export function AssessmentReviewPanel({
   const crewNum = Math.max(1, Number(crewSize) || 1);
 
   const sizing = calculateAssessmentSizing({
-    sections: assessment.sections,
+    sections,
     benchmarkProductivitySqm: prodNum,
     productiveCrewSize: crewNum,
     roadWorkerDailyRateCents: dailyCents,
@@ -72,15 +153,25 @@ export function AssessmentReviewPanel({
     budgetLines,
   });
 
-  const buildDraft = (): SiteAssessment => ({
-    ...assessment,
-    benchmarkProductivitySqm: prodNum,
-    productiveCrewSize: crewNum,
-    roadWorkerDailyRateCents: dailyCents,
-    cookWeeklyRateCents: cookCents,
-    contractValueCents: contractCents,
-    budgetLines,
-  });
+  const buildDraft = (): SiteAssessment => {
+    const { startGps, endGps } = extractStartEndGps(routePoints);
+    return {
+      ...assessment,
+      startGps: routePoints.length > 0 ? startGps : assessment.startGps,
+      endGps: routePoints.length > 0 ? endGps : assessment.endGps,
+      routePoints,
+      waypointMeasuredDistanceMeters: waypointMeasuredMeters,
+      acceptedDistanceMeters,
+      distanceOverrideReason: distanceOverrideReason.trim() || null,
+      sections,
+      benchmarkProductivitySqm: prodNum,
+      productiveCrewSize: crewNum,
+      roadWorkerDailyRateCents: dailyCents,
+      cookWeeklyRateCents: cookCents,
+      contractValueCents: contractCents,
+      budgetLines,
+    };
+  };
 
   const addBudgetLine = () => {
     const cents = parseZarToCents(newLineRand);
@@ -179,6 +270,84 @@ export function AssessmentReviewPanel({
         <span>Cost / m²: <strong className="text-foreground tabular-money">{sizing.costPerSqmCents !== null ? formatZarCents(sizing.costPerSqmCents) : "—"}</strong></span>
         <span>Excludes tax & loan repayments</span>
       </div>
+
+      {/* Interactive GPS Route Map & Distance Reconciliation */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-lg">Measured GPS route & distance baseline</CardTitle>
+          <CardDescription className="text-xs">
+            {canApprove
+              ? isApproved
+                ? "Approved baseline route. Any waypoint edits require approving a new Scope Amendment Revision below."
+                : "Add, drag, insert, reorder, or delete waypoints to refine the route. Dependent sizing updates immediately."
+              : "Captured GPS waypoints and segment distances from start."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-2 text-xs sm:grid-cols-3">
+            <div className="rounded border border-border bg-muted/40 p-2.5">
+              <p className="text-muted-foreground">Waypoint-measured distance</p>
+              <p className="text-sm font-bold tabular-money">
+                {waypointMeasuredMeters !== null ? formatDistanceMeters(waypointMeasuredMeters) : "Not captured"}
+              </p>
+            </div>
+            <div className="rounded border border-border bg-muted/40 p-2.5">
+              <p className="text-muted-foreground">Road-network distance (separate)</p>
+              <p className="text-sm font-bold tabular-money">
+                {assessment.roadNetworkDistanceMeters !== null && assessment.roadNetworkDistanceMeters !== undefined
+                  ? formatDistanceMeters(assessment.roadNetworkDistanceMeters)
+                  : "Not provided"}
+              </p>
+            </div>
+            <div className="rounded border border-border bg-muted/40 p-2.5">
+              <p className="text-muted-foreground">Approved / accepted basis</p>
+              <p className="text-sm font-bold tabular-money">
+                {formatDistanceMeters(acceptedDistanceMeters)}
+              </p>
+            </div>
+          </div>
+
+          <RouteCapturePanel
+            points={routePoints}
+            editable={canApprove}
+            userEmail={session?.email ?? ""}
+            userId={session?.userId ?? null}
+            gpsUnavailableReason={assessment.gpsUnavailableReason ?? ""}
+            onChangePoints={handleReviewRouteChange}
+            onGpsUnavailable={() => {}}
+          />
+
+          {canApprove && (
+            <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-3 sm:grid-cols-4">
+              <div>
+                <Label className="text-xs">Contractual override (km)</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={overrideKmInput}
+                  onChange={(e) => setOverrideKmInput(e.target.value)}
+                  className="touch-target tabular-money"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <Label className="text-xs">Override reason (required)</Label>
+                <Input
+                  value={distanceOverrideReason}
+                  onChange={(e) => setDistanceOverrideReason(e.target.value)}
+                  placeholder="e.g. Agreed municipal chainage certificate"
+                  className="touch-target"
+                />
+              </div>
+              <div className="flex items-end">
+                <Button type="button" variant="outline" onClick={applyManualDistanceOverride} className="touch-target w-full">
+                  Apply override
+                </Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Planning assumptions & budget lines (Admin editable) */}
       {canApprove && (
@@ -372,6 +541,7 @@ export function AssessmentReviewPanel({
                 <p className="text-muted-foreground">Reason: {rev.reason}</p>
                 <p className="tabular-money">
                   Road: {(rev.roadLengthMeters / 1000).toFixed(2)} km · Verge: {(rev.vergeLengthMeters / 1000).toFixed(2)} km · Area: {rev.physicalAreaSqm.toLocaleString()} m² · Effort: {rev.effortUnitsSqm.toLocaleString()} m² · OpEx: {formatZarCents(rev.estimatedOperatingCents)}
+                  {rev.routePoints && rev.routePoints.length > 0 ? ` · ${rev.routePoints.length} route pts` : ""}
                 </p>
               </div>
             ))}
