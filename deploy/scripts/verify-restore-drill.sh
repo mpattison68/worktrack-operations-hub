@@ -9,8 +9,8 @@ set -euo pipefail
 echo "1. Checking WorkTrack migration ledger..."
 MIGRATION_COUNT="$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM public.schema_migrations_worktrack;")"
 echo "   Applied migrations: ${MIGRATION_COUNT}"
-if [[ "${MIGRATION_COUNT:-0}" -lt 7 ]]; then
-  echo "FAIL: Expected at least 7 WorkTrack migrations (Increments A-F)." >&2
+if [[ "${MIGRATION_COUNT:-0}" -lt 8 ]]; then
+  echo "FAIL: Expected at least 8 WorkTrack migrations (Increments A-F + storage RLS)." >&2
   exit 1
 fi
 
@@ -23,8 +23,8 @@ DISABLED_RLS="$(psql "$DATABASE_URL" -tAc "
     AND c.relkind = 'r'
     AND c.relname IN (
       'businesses', 'memberships', 'jobs', 'workers',
-      'payroll_runs', 'expenses', 'ledger_entries',
-      'weekly_reports', 'vehicle_assets', 'sync_idempotency_keys', 'evidence_attachments'
+      'payroll_runs', 'expenses', 'journal_entries',
+      'weekly_reports', 'assets', 'sync_idempotency_keys', 'evidence_attachments'
     )
     AND c.relrowsecurity = false;
 ")"

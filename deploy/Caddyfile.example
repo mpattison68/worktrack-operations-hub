@@ -1,0 +1,28 @@
+# Example Caddy reverse proxy config for WorkTrack (app + self-hosted Supabase API).
+# Caddy provisions and renews Let's Encrypt TLS certificates automatically.
+# Adapt domains and localhost upstream ports to match your VM.
+
+app.worktrack.example.co.za {
+    encode zstd gzip
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(self), camera=(self)"
+    }
+    @sw path /sw.js
+    header @sw Cache-Control "no-cache, no-store, must-revalidate"
+    reverse_proxy 127.0.0.1:3080
+}
+
+api.worktrack.example.co.za {
+    request_body {
+        max_size 15MB
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+    }
+    reverse_proxy 127.0.0.1:8000
+}

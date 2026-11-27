@@ -1,28 +1,35 @@
-# WorkTrack Operations Hub
+# WorkTrack — Road-Verge Operations Hub
 
-Build WorkTrack using the attached WorkTrack_Lovable_Specification.md as the authoritative product and technical specification. Read the entire specification and preserve it in the project knowledge and repository. First produce an implementation plan covering increments A–F and the acceptance tests. Do not build a mock dashboard or attempt all functionality in one pass.
+WorkTrack is a mobile-first web application and Progressive Web App (PWA) for managing South African road-verge clearing operations: job assessments with GPS route waypoints, daily progress tracking, team attendance, integer-cent ZAR payroll, field expenses, cash/loan ledger tracking, weekly reports, vehicle pre-use safety checks, private photo/receipt evidence, and offline sync.
 
-The production application must run on my own Linux VM using Docker Compose and self-hosted Supabase. Do not make Lovable Cloud a required production dependency. Use an independently controlled development backend with synthetic data. Connect to my private GitHub repository when available.
+Production runs independently on a customer-owned Linux VM using Docker Compose and self-hosted Supabase — with **zero runtime dependency on Lovable Cloud**.
 
-Implement increment A first: application foundation, authentication, permissions, job configuration, worker roles, rates, roster, database migrations and deployment skeleton. Provide actual test results and identify any limitations before proceeding to increment B.
+## Architecture Summary
+- **Frontend & SSR shell**: React 19, TanStack Start v1 / TanStack Router, Tailwind CSS v4, Vite, Leaflet (OpenStreetMap tiles), Recharts, and Workbox (`vite-plugin-pwa`).
+- **Backend & Data**: Self-hosted Supabase (PostgreSQL with Row Level Security, GoTrue Auth, PostgREST, private Supabase Storage bucket `worktrack-evidence`, Kong API Gateway).
+- **Development mode**: When `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are unset, the app runs in a clearly badged synthetic browser-storage mode (`Synthetic dev mode`) for UI testing without a database.
+- **Authoritative specification**: [`docs/specification.md`](docs/specification.md)
 
-This project was built with [Lovable](https://lovable.dev).
+## Documentation
+- [`DEPLOYMENT.md`](DEPLOYMENT.md) — Deployment architecture, deployment readiness review, VM sizing, and 16-step self-hosted VM installation guide
+- [`CONFIGURATION.md`](CONFIGURATION.md) — Environment variables, self-hosted Supabase Auth/SMTP/Storage config, reverse proxy (Nginx & Caddy), and security settings
+- [`BACKUP_AND_RESTORE.md`](BACKUP_AND_RESTORE.md) — Automated daily backups, encryption, off-site sync, retention, and full VM disaster recovery
+- [`UPGRADING.md`](UPGRADING.md) — Single-command updates from GitHub, migration safety, health checks, and rollback
+- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — Common build, Auth, RLS, Storage, HTTPS, GPS, and PWA issues
+- [`docs/android-field-trial-checklist.md`](docs/android-field-trial-checklist.md) — Physical Android handset test checklist (T26)
+- [`docs/vm-backup-and-handover-runbook.md`](docs/vm-backup-and-handover-runbook.md) — Isolated-VM restore drill and handover runbook (T27/T28)
 
-## Build with Lovable
+## Local Development
+Requires Node.js 22+ (or Bun).
 
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/0da5ad5f-daf4-42c1-ae48-02e7ef60d7c8).
-
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
-
-## Development
-
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
-
-```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
+```bash
+git clone <your-private-github-repo-url>
+cd worktrack
+npm install
 npm run dev
+```
+
+Run the automated test suite:
+```bash
+npm test
 ```

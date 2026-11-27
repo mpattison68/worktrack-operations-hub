@@ -7,18 +7,33 @@ name: worktrack
 
 services:
   worktrack-web:
+    container_name: worktrack-web
     build:
       context: ..
       dockerfile: Dockerfile
       args:
         VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
         VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+    image: worktrack-web:local
+    init: true
     restart: unless-stopped
     ports:
       - "${WORKTRACK_BIND_HOST:-127.0.0.1}:${WORKTRACK_BIND_PORT:-3080}:3000"
     environment:
       NODE_ENV: production
       PORT: "3000"
+      HOST: "0.0.0.0"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/auth >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     networks:
       - worktrack-internal
 
