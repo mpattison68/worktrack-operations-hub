@@ -64,7 +64,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const desktopNav = [
     { to: "/" as const, label: en.nav.overview, icon: Home, active: true, visible: true },
-    { to: "/assessments" as const, label: en.nav.assessments, icon: MapPin, active: false, visible: true },
+    { to: "/assessments" as const, label: en.nav.assessments, icon: MapPin, active: true, visible: true },
     { to: "/jobs" as const, label: en.nav.jobs, icon: Briefcase, active: true, visible: true },
     { to: "/workers" as const, label: en.nav.workers, icon: Users, active: true, visible: true },
     { to: "/payroll" as const, label: en.nav.payroll, icon: CreditCard, active: false, visible: can(session.role, "payroll.view") },

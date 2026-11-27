@@ -9,4 +9,5 @@
 - [x] Increment A: Portable SQL migration (`db/migrations/`) and synthetic seed (`db/seed/`)
 - [x] Increment A: Self-hosted Linux VM deployment skeleton (`Dockerfile`, `deploy/`)
 - [x] Increment A: Unit & integration tests + browser verification
-- [ ] Increment B–F: Held at Increment A boundary pending user review
+- [x] Increment B: 7-step assessment wizard, GPS/manual fallback, tappable verge diagram, sizing/benchmark/budget, admin approval & immutable scope revisions, portable SQL migration, T01–T04/T24 tests
+- [ ] Increment C–F: Held at Increment B boundary pending user review

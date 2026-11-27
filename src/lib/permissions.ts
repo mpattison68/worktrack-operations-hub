@@ -16,6 +16,8 @@ export type PermissionAction =
   | "jobs.view_assigned"
   | "jobs.manage"
   | "scope.approve"
+  | "assessments.create"
+  | "assessments.review"
   | "workers.view_all"
   | "workers.view_assigned"
   | "workers.add"
@@ -40,6 +42,8 @@ const ROLE_PERMISSIONS: Record<AppRole, ReadonlySet<PermissionAction>> = {
     "jobs.view_assigned",
     "jobs.manage",
     "scope.approve",
+    "assessments.create",
+    "assessments.review",
     "workers.view_all",
     "workers.view_assigned",
     "workers.add",
@@ -57,6 +61,7 @@ const ROLE_PERMISSIONS: Record<AppRole, ReadonlySet<PermissionAction>> = {
     "rates.request_override",
     "jobs.view_all",
     "jobs.view_assigned",
+    "assessments.create",
     "workers.view_all",
     "workers.view_assigned",
     "workers.add",
@@ -66,6 +71,7 @@ const ROLE_PERMISSIONS: Record<AppRole, ReadonlySet<PermissionAction>> = {
   ]),
   supervisor: new Set<PermissionAction>([
     "jobs.view_assigned",
+    "assessments.create",
     "workers.view_assigned",
   ]),
 };

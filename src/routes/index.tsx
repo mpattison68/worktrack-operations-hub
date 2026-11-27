@@ -74,7 +74,7 @@ function OverviewPage() {
             {session.role === "admin" ? en.nav.overview : en.nav.home}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Signed in as {session.fullName} ({en.roles[session.role]}). Increment A foundation is
+            Signed in as {session.fullName} ({en.roles[session.role]}). Increments A &amp; B are
             active.
           </p>
         </div>
@@ -153,10 +153,10 @@ function OverviewPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardDescription>Release increment</CardDescription>
-            <CardTitle className="text-3xl">A</CardTitle>
+            <CardTitle className="text-3xl">B</CardTitle>
           </CardHeader>
           <CardContent className="text-xs text-muted-foreground">
-            Increments B–F disabled until review
+            Increments C–F disabled until review
           </CardContent>
         </Card>
       </div>
@@ -210,7 +210,7 @@ function OverviewPage() {
           <CardContent className="space-y-2 text-sm">
             {[
               { id: "A", label: "Foundation, auth, RBAC, jobs, roles/rates/roster, migrations & VM skeleton", done: true },
-              { id: "B", label: "Site assessment wizard, routes, strips, sizing & scope revisions", done: false },
+              { id: "B", label: "Site assessment wizard, routes, strips, sizing & scope revisions", done: true },
               { id: "C", label: "Daily progress, interruptions, weekly attendance & payroll", done: false },
               { id: "D", label: "Wage payments, expenses, balanced cash ledger, loans & forecast", done: false },
               { id: "E", label: "Weekly reports, dashboard drilldowns, exports & truck checks", done: false },

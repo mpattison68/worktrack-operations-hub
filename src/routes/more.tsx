@@ -26,7 +26,7 @@ function MorePage() {
 
   const items = [
     { to: "/jobs" as const, label: en.nav.jobs, icon: Briefcase, badge: "Active", visible: true },
-    { to: "/assessments" as const, label: en.nav.assessJob, icon: MapPin, badge: "Increment B", visible: true },
+    { to: "/assessments" as const, label: en.nav.assessJob, icon: MapPin, badge: "Active", visible: true },
     { to: "/vehicles" as const, label: en.nav.truckCheck, icon: Truck, badge: "Increment E", visible: true },
     { to: "/photos" as const, label: en.nav.photos, icon: Camera, badge: "Increment B/E", visible: true },
     { to: "/reports" as const, label: en.nav.weeklyReport, icon: FileText, badge: "Increment E", visible: true },
