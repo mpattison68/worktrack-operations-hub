@@ -116,6 +116,18 @@ export const en = {
     unknownWarning: "Unknown attendance blocks payroll approval. Confirm every day as worked, partial, or no work.",
     accessDenied: "Supervisors do not have access to payroll totals, wage rates, or worker statements.",
   },
+  finance: {
+    moneyTitle: "Money, wage payments & expenses",
+    moneySubtitle: "Record wage payments, capture field expenses, match cash transfers, and monitor cash flow.",
+    expensesTitle: "Expenses & receipt evidence",
+    expensesSubtitle: "Capture operating and capital expenses with receipt photos or missing-receipt reasons.",
+    cashFlowTitle: "Cash ledger & weekly cash forecast",
+    cashFlowSubtitle: "Balanced cash accounts, transfer matching, customer receipts, reconciliation, and shortfall forecast.",
+    loansTitle: "Loan account & repayment tracking",
+    loansSubtitle: "Zero-interest principal tracking, advances, repayments separate from operating expenses, and restricted funding guards.",
+    wagesRedirectNotice: "Wage payments must be recorded in Payroll / Wage payments so worker balances update without creating a duplicate expense.",
+    accessDenied: "Supervisors do not have access to wage payments, cash balances, or loan accounts.",
+  },
   common: {
     save: "Save",
     cancel: "Cancel",

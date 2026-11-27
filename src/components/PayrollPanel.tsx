@@ -17,6 +17,8 @@ import type {
   TeamDay,
 } from "@/lib/domain/increment-c-types";
 import { buildWorkerStatement, calculatePayrollWeek } from "@/lib/domain/payroll-calc";
+import { summarizeWorkerWagePayments } from "@/lib/domain/finance-calc";
+import type { WagePayment } from "@/lib/domain/increment-d-types";
 import { savePayrollRunDraftOrApprove } from "@/lib/data/increment-c-repository";
 import { formatDateSA, formatZarCents, parseZarToCents } from "@/lib/format";
 import { can } from "@/lib/permissions";
@@ -40,6 +42,7 @@ interface PayrollPanelProps {
   teamDays: TeamDay[];
   attendanceEntries: AttendanceEntry[];
   payrollRuns: PayrollRun[];
+  wagePayments?: WagePayment[];
 }
 
 export function PayrollPanel({
@@ -55,6 +58,7 @@ export function PayrollPanel({
   teamDays,
   attendanceEntries,
   payrollRuns,
+  wagePayments = [],
 }: PayrollPanelProps) {
   const qc = useQueryClient();
   const roleMap = useMemo(() => new Map(roles.map((r) => [r.id, r])), [roles]);
@@ -172,11 +176,16 @@ export function PayrollPanel({
   if (mode === "statements") {
     const activeWorker =
       workers.find((w) => w.id === statementWorkerId) ?? workers[0] ?? null;
+    const paymentSummary = activeWorker
+      ? summarizeWorkerWagePayments(activeWorker.id, wagePayments)
+      : null;
     const statement = activeWorker
       ? buildWorkerStatement(
           activeWorker,
           roleMap.get(activeWorker.workerRoleId)?.name ?? "Role",
           payrollRuns,
+          paymentSummary?.allocatedByRunId ?? {},
+          paymentSummary?.unallocatedAdvanceCents ?? 0,
         )
       : null;
 
@@ -229,7 +238,11 @@ export function PayrollPanel({
                   <p className="text-lg font-bold tabular-money">
                     {formatZarCents(statement.allocatedPaymentsTotalCents)}
                   </p>
-                  <p className="text-[11px] text-muted-foreground">Wage payments in Inc. D</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {paymentSummary && paymentSummary.unallocatedAdvanceCents > 0
+                      ? `Includes ${formatZarCents(paymentSummary.unallocatedAdvanceCents)} advance`
+                      : "From Wage payments ledger"}
+                  </p>
                 </div>
                 <div className="rounded-md border border-border p-3">
                   <p className="text-xs text-muted-foreground">Closing balance</p>

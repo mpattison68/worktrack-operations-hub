@@ -609,6 +609,7 @@ export function buildWorkerStatement(
   roleName: string,
   payrollRuns: PayrollRun[],
   allocatedPaymentsByRunId: Record<string, number> = {},
+  unallocatedAdvanceCents = 0,
 ): WorkerStatement {
   const activeRuns = payrollRuns
     .filter((r) => r.status !== "superseded")
@@ -668,8 +669,9 @@ export function buildWorkerStatement(
     });
   }
 
+  const totalPaymentsIncludingAdvances = allocatedPaymentsTotalCents + unallocatedAdvanceCents;
   const closingBalanceCents =
-    worker.openingBalanceCents + approvedNetTotalCents - allocatedPaymentsTotalCents;
+    worker.openingBalanceCents + approvedNetTotalCents - totalPaymentsIncludingAdvances;
 
   return {
     workerId: worker.id,
@@ -679,7 +681,7 @@ export function buildWorkerStatement(
     openingBalanceVerified: worker.openingBalanceVerified,
     approvedNetTotalCents,
     provisionalNetTotalCents,
-    allocatedPaymentsTotalCents,
+    allocatedPaymentsTotalCents: totalPaymentsIncludingAdvances,
     closingBalanceCents,
     rows,
   };

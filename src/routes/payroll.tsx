@@ -13,6 +13,7 @@ import {
 import { useWorkTrackAuth } from "@/lib/auth-context";
 import { listJobs, listWorkforceBundle } from "@/lib/data/repository";
 import { listAttendanceForWeek, listPayrollRuns } from "@/lib/data/increment-c-repository";
+import { listFinanceBundle } from "@/lib/data/increment-d-repository";
 import { formatDateSA, getMonSunWeekRange, todaySAST } from "@/lib/format";
 import { can } from "@/lib/permissions";
 import { en } from "@/i18n/en";
@@ -74,6 +75,12 @@ function PayrollPage() {
   const payrollRunsQuery = useQuery({
     queryKey: ["payroll-runs", session?.businessId, "all"],
     queryFn: () => listPayrollRuns(session!),
+    enabled: Boolean(session && canViewPayroll),
+  });
+
+  const financeQuery = useQuery({
+    queryKey: ["finance", session?.businessId, session?.userId],
+    queryFn: () => listFinanceBundle(session!),
     enabled: Boolean(session && canViewPayroll),
   });
 
@@ -225,6 +232,7 @@ function PayrollPage() {
                 teamDays={att.teamDays}
                 attendanceEntries={att.attendanceEntries}
                 payrollRuns={payrollRunsQuery.data ?? []}
+                wagePayments={financeQuery.data?.wagePayments ?? []}
               />
             ) : (
               <Card>
