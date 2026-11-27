@@ -14,6 +14,8 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/lib/auth-context";
+import { OfflineSyncProvider } from "@/lib/offline/sync-context";
+import { registerWorkTrackServiceWorker } from "@/lib/offline/pwa-register";
 import { AppShell } from "@/components/AppShell";
 
 function NotFoundComponent() {
@@ -134,12 +136,18 @@ function RootShell({ children }: { children: ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
+  useEffect(() => {
+    void registerWorkTrackServiceWorker();
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <AppShell>
-          <Outlet />
-        </AppShell>
+        <OfflineSyncProvider>
+          <AppShell>
+            <Outlet />
+          </AppShell>
+        </OfflineSyncProvider>
         <Toaster position="top-right" richColors />
       </AuthProvider>
     </QueryClientProvider>

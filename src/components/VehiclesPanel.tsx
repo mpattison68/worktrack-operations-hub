@@ -30,6 +30,8 @@ import type {
   PreUseCheckItemKey,
 } from "@/lib/domain/increment-e-types";
 import { can } from "@/lib/permissions";
+import { useOfflineSync } from "@/lib/offline/sync-context";
+import { enqueueOfflineMutation } from "@/lib/offline/sync-engine";
 import { formatDateSA, formatZarCents, parseZarToCents, todaySAST } from "@/lib/format";
 import { en } from "@/i18n/en";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -58,7 +60,8 @@ const DEFAULT_ITEMS: Record<PreUseCheckItemKey, CheckItemResult> = {
 };
 
 export function VehiclesPanel() {
-  const { session, isOnline } = useWorkTrackAuth();
+  const { session } = useWorkTrackAuth();
+  const { effectiveOnline, refreshOfflineState } = useOfflineSync();
   const qc = useQueryClient();
 
   const bundleQuery = useQuery({
@@ -135,7 +138,7 @@ export function VehiclesPanel() {
       if (odoNum !== null && (Number.isNaN(odoNum) || odoNum < 0)) {
         throw new Error("Enter a valid non-negative odometer reading.");
       }
-      return recordPreUseCheck(session, {
+      const payload = {
         assetId: selectedAssetId,
         jobId: selectedJobId || null,
         checkDate,
@@ -143,17 +146,45 @@ export function VehiclesPanel() {
         items,
         comment,
         photoNote: photoNote.trim() || null,
-        isOffline: !isOnline,
-      });
+        isOffline: !effectiveOnline,
+      };
+      if (!effectiveOnline) {
+        const evalResult = evaluatePreUseCheck(items);
+        const asset = assets.find((a) => a.id === selectedAssetId);
+        await enqueueOfflineMutation(session, {
+          entityType: "vehicle_check",
+          operation: "create",
+          label: `Truck check: ${asset?.name ?? "Vehicle"}${evalResult.stopUseTriggered ? " (STOP DO NOT USE)" : ""}`,
+          payload,
+        });
+        await refreshOfflineState();
+        return {
+          queuedOffline: true as const,
+          stopUseTriggered: evalResult.stopUseTriggered,
+        };
+      }
+      const res = await recordPreUseCheck(session, payload);
+      return {
+        queuedOffline: false as const,
+        stopUseTriggered: res.check.stopUseTriggered,
+      };
     },
     onSuccess: (res) => {
-      qc.invalidateQueries({ queryKey: ["increment-e"] });
-      if (res.check.stopUseTriggered) {
+      if (!res.queuedOffline) {
+        qc.invalidateQueries({ queryKey: ["increment-e"] });
+      }
+      if (res.stopUseTriggered) {
         toast.error(
-          "STOP DO NOT USE triggered — vehicle marked unavailable and safety alert queued.",
+          res.queuedOffline
+            ? "STOP DO NOT USE — saved on phone. Vehicle alert will notify Admin/Owner when reconnected."
+            : "STOP DO NOT USE triggered — vehicle marked unavailable and safety alert queued.",
         );
       } else {
-        toast.success("Daily pre-use check saved.");
+        toast.success(
+          res.queuedOffline
+            ? "Daily pre-use check saved on phone — pending sync."
+            : "Daily pre-use check saved.",
+        );
       }
       setComment("");
       setPhotoNote("");

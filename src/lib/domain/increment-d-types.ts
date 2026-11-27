@@ -148,6 +148,8 @@ export interface ExpenseRecord {
   evidenceStatus: EvidenceStatus;
   recordedBy: string;
   createdAt: string;
+  revision?: number;
+  idempotencyKey?: string;
 }
 
 export interface ExpenseRequest {

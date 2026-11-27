@@ -36,3 +36,4 @@ WorkTrack is built sequentially in six increments (A–F). Each increment ships 
 ## Increment F — Offline Sync Engine, Security Hardening & Production Rollout
 - **Scope**: Guarded `vite-plugin-pwa` service worker, IndexedDB partitioned by user/business, idempotent mutation queue with dependency ordering (record before attachment), revision conflict resolution UI (no silent LWW), logout unsynced warning & local data wipe, security/RLS penetration tests, Android field usability trial, backup/restore drill on isolated VM, and final handover runbook.
 - **Acceptance Gate Coverage**: T19, T20, T22 (offline defect), T26, T27, T28.
+- **Status**: Application code, portable SQL migration (`202611270007`), automated tests, backup/restore verification scripts, and Android/VM drill runbooks complete; physical Android handset field trial (T26) and isolated Linux VM restore execution (T27/T28) remain user-executed on customer hardware.

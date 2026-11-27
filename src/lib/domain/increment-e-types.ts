@@ -51,6 +51,7 @@ export interface AssetCheck {
   checkedByUserId: string;
   checkedByName: string;
   createdAt: string;
+  idempotencyKey?: string;
 }
 
 export type DefectStatus = "open" | "resolved";

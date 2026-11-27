@@ -502,6 +502,7 @@ export async function recordPreUseCheck(
     comment: string;
     photoNote: string | null;
     isOffline?: boolean;
+    idempotencyKey?: string;
   },
 ): Promise<{ check: AssetCheck; defect: AssetDefect | null; notification: NotificationRecord | null }> {
   if (!can(session.role, "vehicles.check")) {
@@ -512,6 +513,23 @@ export async function recordPreUseCheck(
   }
 
   const store = loadStore();
+  if (input.idempotencyKey) {
+    const existingCheck = store.checks.find(
+      (c) => c.businessId === session.businessId && c.idempotencyKey === input.idempotencyKey,
+    );
+    if (existingCheck) {
+      const existingDefect =
+        store.defects.find((d) => d.checkId === existingCheck.id) ?? null;
+      const existingNotification = existingDefect
+        ? (store.notifications.find((n) => n.dedupKey === `defect:${existingDefect.id}`) ?? null)
+        : null;
+      return {
+        check: existingCheck,
+        defect: existingDefect,
+        notification: existingNotification,
+      };
+    }
+  }
   const asset = store.assets.find((a) => a.id === input.assetId);
   if (!asset) throw new Error("Vehicle or equipment not found.");
   assertBusinessBoundary(session, asset.businessId, "vehicle");
@@ -537,6 +555,7 @@ export async function recordPreUseCheck(
     checkedByUserId: session.userId,
     checkedByName: session.fullName,
     createdAt: now,
+    ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
   };
   store.checks.unshift(check);
 

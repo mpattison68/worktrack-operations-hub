@@ -34,6 +34,8 @@ import {
 import { calculateFuelUnitCostCents } from "@/lib/domain/finance-calc";
 import { formatDateSA, formatZarCents, parseZarToCents, todaySAST } from "@/lib/format";
 import { can } from "@/lib/permissions";
+import { useOfflineSync } from "@/lib/offline/sync-context";
+import { enqueueOfflineMutation } from "@/lib/offline/sync-engine";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -73,6 +75,7 @@ interface ExpensesPanelProps {
 export function ExpensesPanel({ session, finance, jobs }: ExpensesPanelProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { effectiveOnline, refreshOfflineState } = useOfflineSync();
   const cashAccounts = React.useMemo(
     () => finance.accounts.filter((a) => a.isCashAccount && !a.isRestricted),
     [finance.accounts],
@@ -139,7 +142,7 @@ export function ExpensesPanel({ session, finance, jobs }: ExpensesPanelProps) {
       : null;
 
   const saveExpenseMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (parsedAmount === null || parsedAmount <= 0) {
         throw new Error("Enter a positive ZAR expense amount.");
       }
@@ -149,7 +152,7 @@ export function ExpensesPanel({ session, finance, jobs }: ExpensesPanelProps) {
           : paymentStatus === "unpaid_payable"
             ? 0
             : parseZarToCents(paidRand) ?? 0;
-      return recordExpense(session, {
+      const payload = {
         jobId: jobId === "overhead" ? null : jobId,
         expenseDate,
         category,
@@ -167,15 +170,34 @@ export function ExpensesPanel({ session, finance, jobs }: ExpensesPanelProps) {
         odometerKm: category === "fuel" && odometerKm.trim() ? Number(odometerKm) : null,
         receiptAttachment: receipt,
         missingReceiptReason: receipt ? null : missingReason,
-      });
+      };
+      if (!effectiveOnline) {
+        if (!payload.receiptAttachment && !payload.missingReceiptReason?.trim()) {
+          throw new Error("Attach a receipt photo or enter a missing-receipt reason.");
+        }
+        await enqueueOfflineMutation(session, {
+          entityType: "expense",
+          operation: "create",
+          label: `Expense: ${category.replace(/_/g, " ")} (${formatZarCents(parsedAmount)})`,
+          payload,
+        });
+        await refreshOfflineState();
+        return { queuedOffline: true as const };
+      }
+      const exp = await recordExpense(session, payload);
+      return { queuedOffline: false as const, exp };
     },
-    onSuccess: (exp) => {
-      queryClient.invalidateQueries({ queryKey: ["finance"] });
-      toast.success(
-        exp.needsReview
-          ? "Expense saved and flagged for review (missing receipt or duplicate)."
-          : "Expense saved and posted to cash ledger.",
-      );
+    onSuccess: (result) => {
+      if (result.queuedOffline) {
+        toast.info("Saved on phone — pending sync. Will upload when connection returns.");
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["finance"] });
+        toast.success(
+          result.exp.needsReview
+            ? "Expense saved and flagged for review (missing receipt or duplicate)."
+            : "Expense saved and posted to cash ledger.",
+        );
+      }
       setAmountRand("");
       setPaidRand("");
       setSupplier("");

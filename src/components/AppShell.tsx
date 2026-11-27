@@ -24,15 +24,35 @@ import {
 } from "lucide-react";
 import { en } from "@/i18n/en";
 import { useWorkTrackAuth } from "@/lib/auth-context";
+import { useOfflineSync } from "@/lib/offline/sync-context";
 import { can } from "@/lib/permissions";
 import { NotificationsPopover } from "@/components/NotificationsPopover";
+import { SyncStatusPopover } from "@/components/SyncStatusPopover";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const PUBLIC_PATHS = new Set(["/auth", "/reset-password"]);
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { session, loading, isOnline, backendMode, signOut } = useWorkTrackAuth();
+  const { session, loading, backendMode, signOut } = useWorkTrackAuth();
+  const {
+    pendingCount,
+    conflictCount,
+    effectiveOnline,
+    syncNow,
+    clearLocalPartition,
+  } = useOfflineSync();
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = React.useState(false);
   const location = useLocation();
   const navigate = useNavigate();
   const isPublicRoute = PUBLIC_PATHS.has(location.pathname);
@@ -59,6 +79,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   const handleSignOut = async () => {
+    if (pendingCount > 0 || conflictCount > 0) {
+      setLogoutConfirmOpen(true);
+      return;
+    }
+    await clearLocalPartition();
+    await signOut();
+    navigate({ to: "/auth", replace: true });
+  };
+
+  const handleDiscardAndSignOut = async () => {
+    setLogoutConfirmOpen(false);
+    await clearLocalPartition();
     await signOut();
     navigate({ to: "/auth", replace: true });
   };
@@ -158,7 +190,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="flex min-w-0 items-center gap-2">
               <span className="font-display text-base font-bold lg:hidden">{en.app.name}</span>
               <Badge variant="outline" className="gap-1.5 text-xs">
-                {isOnline ? (
+                {effectiveOnline ? (
                   <>
                     <Wifi className="h-3.5 w-3.5 text-status-ok" />
                     <span>{en.app.online}</span>
@@ -192,9 +224,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   </>
                 )}
               </Badge>
-              <span className="hidden text-xs text-muted-foreground md:inline">
-                {en.app.pendingSync(0)}
-              </span>
+              <SyncStatusPopover />
             </div>
 
             <div className="flex items-center gap-2">
@@ -246,6 +276,41 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </nav>
       </div>
+
+      <AlertDialog open={logoutConfirmOpen} onOpenChange={setLogoutConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unsynced records on this device</AlertDialogTitle>
+            <AlertDialogDescription>
+              You have {pendingCount} pending offline{" "}
+              {pendingCount === 1 ? "item" : "items"}
+              {conflictCount > 0 ? ` and ${conflictCount} unresolved conflict(s)` : ""} saved on
+              this device. Signing out clears protected local data for shared-device safety.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col gap-2 sm:flex-row">
+            <AlertDialogCancel className="touch-target">Stay signed in</AlertDialogCancel>
+            {effectiveOnline && (
+              <Button
+                variant="secondary"
+                className="touch-target"
+                onClick={async () => {
+                  await syncNow(true);
+                  setLogoutConfirmOpen(false);
+                }}
+              >
+                Sync now
+              </Button>
+            )}
+            <AlertDialogAction
+              onClick={() => void handleDiscardAndSignOut()}
+              className="touch-target bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Discard & sign out
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

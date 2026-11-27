@@ -3,12 +3,29 @@ set -euo pipefail
 
 : "${DATABASE_URL:?Set DATABASE_URL before running backup.}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/worktrack}"
+STORAGE_DATA_DIR="${STORAGE_DATA_DIR:-}"
+CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$BACKUP_DIR"
 
 OUT_FILE="${BACKUP_DIR}/worktrack-db-${STAMP}.dump"
 pg_dump "$DATABASE_URL" --format=custom --no-owner --file="$OUT_FILE"
 sha256sum "$OUT_FILE" > "${OUT_FILE}.sha256"
+chmod 600 "$OUT_FILE" "${OUT_FILE}.sha256"
+
+if [[ -n "$STORAGE_DATA_DIR" && -d "$STORAGE_DATA_DIR" ]]; then
+  STORAGE_TAR="${BACKUP_DIR}/worktrack-storage-${STAMP}.tar.gz"
+  tar -czf "$STORAGE_TAR" -C "$STORAGE_DATA_DIR" .
+  sha256sum "$STORAGE_TAR" > "${STORAGE_TAR}.sha256"
+  chmod 600 "$STORAGE_TAR" "${STORAGE_TAR}.sha256"
+  echo "Private storage archive written to ${STORAGE_TAR} (checksum recorded)."
+else
+  echo "Note: STORAGE_DATA_DIR not set or absent; skipped private storage volume archive."
+fi
+
+if [[ -n "$CONFIG_ENV_FILE" && -f "$CONFIG_ENV_FILE" ]]; then
+  echo "Config snapshot reminder: encrypt ${CONFIG_ENV_FILE} off-VM using age/gpg (never store plaintext in git)."
+fi
 
 echo "Database backup written to ${OUT_FILE} (checksum recorded)."
-echo "Encrypt and sync ${BACKUP_DIR} to off-VM storage per docs/specification.md Section 18."
+echo "Encrypt (gpg/age) and sync ${BACKUP_DIR} to off-VM storage per docs/specification.md Section 18 (RPO 24h / RTO 8h)."

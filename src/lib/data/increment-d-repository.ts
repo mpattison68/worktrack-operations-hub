@@ -474,6 +474,7 @@ export async function recordExpense(
     missingReceiptReason: string | null;
     expenseRequestId?: string | null;
     unapprovedExceptionFlag?: boolean;
+    idempotencyKey?: string;
   },
 ): Promise<ExpenseRecord> {
   if (input.category === "wages") {
@@ -496,6 +497,14 @@ export async function recordExpense(
   }
 
   const state = loadStore();
+  if (input.idempotencyKey) {
+    const existingByKey = state.expenses.find(
+      (e) => e.businessId === session.businessId && e.idempotencyKey === input.idempotencyKey,
+    );
+    if (existingByKey) {
+      return existingByKey;
+    }
+  }
   const dup = findDuplicateExpense(
     { expenseDate: input.expenseDate, amountCents: input.amountCents, reference: input.reference },
     state.expenses.filter((e) => e.businessId === session.businessId),
@@ -579,11 +588,63 @@ export async function recordExpense(
     evidenceStatus,
     recordedBy: session.email,
     createdAt: new Date().toISOString(),
+    revision: 1,
+    ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
   };
 
   state.expenses.unshift(record);
   saveStore(state);
   return record;
+}
+
+export interface ExpenseUpdateConflictResult {
+  status: "updated" | "conflict";
+  expense: ExpenseRecord;
+  serverRevision: number;
+}
+
+/**
+ * Revision-checked expense update (T20): refuses silent last-write-wins when baseRevision is stale.
+ */
+export async function updateExpenseWithRevision(
+  session: AuthSession,
+  expenseId: string,
+  baseRevision: number,
+  changes: {
+    description?: string;
+    supplierName?: string;
+    reference?: string;
+    missingReceiptReason?: string | null;
+  },
+): Promise<ExpenseUpdateConflictResult> {
+  const state = loadStore();
+  const expense = state.expenses.find(
+    (e) => e.id === expenseId && e.businessId === session.businessId,
+  );
+  if (!expense) {
+    throw new Error("Expense not found.");
+  }
+  const currentRevision = expense.revision ?? 1;
+  if (baseRevision !== currentRevision) {
+    return {
+      status: "conflict",
+      expense,
+      serverRevision: currentRevision,
+    };
+  }
+  if (changes.description !== undefined) expense.description = changes.description.trim();
+  if (changes.supplierName !== undefined) expense.supplierName = changes.supplierName.trim();
+  if (changes.reference !== undefined) expense.reference = changes.reference.trim();
+  if (changes.missingReceiptReason !== undefined) {
+    expense.missingReceiptReason = changes.missingReceiptReason;
+  }
+  expense.revision = currentRevision + 1;
+  saveStore(state);
+  return {
+    status: "updated",
+    expense,
+    serverRevision: expense.revision,
+  };
 }
 
 export async function createExpenseRequest(
