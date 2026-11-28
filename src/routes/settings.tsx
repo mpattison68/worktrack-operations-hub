@@ -6,12 +6,13 @@ import { toast } from "sonner";
 import { en } from "@/i18n/en";
 import { useWorkTrackAuth } from "@/lib/auth-context";
 import {
-  createInvitation,
+  listJobs,
   getBusiness,
   listAuditEvents,
   listMembershipsAndInvitations,
   updateBusiness,
 } from "@/lib/data/repository";
+import { PersonalAccountPanel, UserAdministrationPanel } from "@/components/AccountMaintenancePanel";
 import { can } from "@/lib/permissions";
 import { formatDateSA } from "@/lib/format";
 import type { AppRole, VatBasis } from "@/lib/domain/types";
@@ -96,29 +97,13 @@ function SettingsPage() {
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not save settings."),
   });
 
-  const inviteMutation = useMutation({
-    mutationFn: () =>
-      createInvitation(session!, {
-        email: inviteEmail,
-        fullName: inviteName,
-        role: inviteRole,
-        assignedJobIds: [],
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["members"] });
-      queryClient.invalidateQueries({ queryKey: ["audit"] });
-      setInviteEmail("");
-      setInviteName("");
-      toast.success("Invitation recorded.");
-    },
-    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not invite member."),
-  });
+  const jobsQuery = useQuery({queryKey:['jobs',session?.businessId,session?.userId],queryFn:()=>{if(!session)throw new Error('Sign in required');return listJobs(session);},enabled:Boolean(session && canManageUsers)});
 
   if (!session) return null;
 
   if (!allowed) {
     return (
-      <Card className="mx-auto max-w-xl">
+      <div className="mx-auto max-w-xl space-y-4"><PersonalAccountPanel session={session}/><Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-status-danger">
             <ShieldAlert className="h-5 w-5" />
@@ -126,7 +111,7 @@ function SettingsPage() {
           </CardTitle>
           <CardDescription>{en.settings.accessDenied}</CardDescription>
         </CardHeader>
-      </Card>
+      </Card></div>
     );
   }
 
@@ -137,6 +122,7 @@ function SettingsPage() {
         <p className="text-sm text-muted-foreground">{en.settings.subtitle}</p>
       </div>
 
+      <PersonalAccountPanel session={session}/>
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
@@ -223,41 +209,7 @@ function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
-          {canManageUsers && (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                inviteMutation.mutate();
-              }}
-              className="grid gap-3 rounded-md border border-border bg-muted/40 p-4 sm:grid-cols-4"
-            >
-              <div className="space-y-1">
-                <Label htmlFor="inv-name">Full name</Label>
-                <Input id="inv-name" value={inviteName} onChange={(e) => setInviteName(e.target.value)} className="touch-target" required />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="inv-email">Email</Label>
-                <Input id="inv-email" type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} className="touch-target" required />
-              </div>
-              <div className="space-y-1">
-                <Label>Role</Label>
-                <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as AppRole)}>
-                  <SelectTrigger className="touch-target"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="admin">{en.roles.admin}</SelectItem>
-                    <SelectItem value="owner">{en.roles.owner}</SelectItem>
-                    <SelectItem value="supervisor">{en.roles.supervisor}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-end">
-                <Button type="submit" disabled={inviteMutation.isPending} className="w-full touch-target gap-1.5">
-                  <MailPlus className="h-4 w-4" />
-                  {en.settings.inviteMember}
-                </Button>
-              </div>
-            </form>
-          )}
+          {canManageUsers && <UserAdministrationPanel session={session} members={membersQuery.data?.memberships ?? []} jobs={jobsQuery.data ?? []}/>}
 
           <div className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">

@@ -23,6 +23,9 @@ services:
       NODE_ENV: production
       PORT: "3000"
       HOST: "0.0.0.0"
+      SUPABASE_URL: ${SUPABASE_URL:-https://worktrack-api.clickcraft.tech}
+      SUPABASE_PUBLISHABLE_KEY: ${VITE_SUPABASE_ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/auth >/dev/null 2>&1 || exit 1"]
       interval: 30s

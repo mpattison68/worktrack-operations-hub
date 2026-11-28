@@ -43,7 +43,7 @@ interface OfflineSyncContextValue {
 const OfflineSyncContext = React.createContext<OfflineSyncContextValue | null>(null);
 
 export function OfflineSyncProvider({ children }: { children: React.ReactNode }) {
-  const { session, isOnline } = useWorkTrackAuth();
+  const { session, isOnline, connectionState } = useWorkTrackAuth();
   const queryClient = useQueryClient();
   const [mutations, setMutations] = React.useState<OfflineMutation[]>([]);
   const [conflicts, setConflicts] = React.useState<ConflictRecord[]>([]);
@@ -52,8 +52,8 @@ export function OfflineSyncProvider({ children }: { children: React.ReactNode })
   const [isSyncing, setIsSyncing] = React.useState(false);
   const [workOfflineMode, setWorkOfflineMode] = React.useState(false);
 
-  const effectiveOnline = isOnline && !workOfflineMode;
-  const prevOnlineRef = React.useRef(effectiveOnline);
+  const effectiveOnline = isOnline && !workOfflineMode && connectionState !== "error";
+  const prevOnlineRef = React.useRef(false);
 
   const refreshOfflineState = React.useCallback(async () => {
     if (!session) {
@@ -105,7 +105,7 @@ export function OfflineSyncProvider({ children }: { children: React.ReactNode })
           toast.error(`${summary.failed} queued item(s) failed to sync and will retry.`);
         }
         return summary;
-      } finally {
+      } catch (error) {toast.error(error instanceof Error ? error.message : "Server connection failed. Records remain on this device.");return null;} finally {
         setIsSyncing(false);
       }
     },
@@ -150,6 +150,10 @@ export function OfflineSyncProvider({ children }: { children: React.ReactNode })
     [mutations],
   );
   const conflictCount = conflicts.length;
+  React.useEffect(()=>{
+    if(!effectiveOnline||!session||pendingCount===0)return;
+    const timer=setInterval(()=>{void syncNow(false);},15000);return()=>clearInterval(timer);
+  },[effectiveOnline,session,pendingCount,syncNow]);
 
   return (
     <OfflineSyncContext.Provider

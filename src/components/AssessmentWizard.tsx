@@ -222,12 +222,12 @@ export function AssessmentWizard({ initial, onSave, onSyncOffline, onCancel }: A
 
   const sizing = calculateAssessmentSizing({
     sections,
-    benchmarkProductivitySqm: initial?.benchmarkProductivitySqm ?? 250,
-    productiveCrewSize: initial?.productiveCrewSize ?? 12,
-    roadWorkerDailyRateCents: initial?.roadWorkerDailyRateCents ?? 25000,
-    cookWeeklyRateCents: initial?.cookWeeklyRateCents ?? 50000,
-    includeCook: initial?.includeCook ?? true,
-    workdaysPerWeek: initial?.workdaysPerWeek ?? 5,
+    benchmarkProductivitySqm: initial?.benchmarkProductivitySqm ?? (session?.mode === "synthetic_dev" ? 250 : 0),
+    productiveCrewSize: initial?.productiveCrewSize ?? (session?.mode === "synthetic_dev" ? 12 : 0),
+    roadWorkerDailyRateCents: initial?.roadWorkerDailyRateCents ?? (session?.mode === "synthetic_dev" ? 25000 : 0),
+    cookWeeklyRateCents: initial?.cookWeeklyRateCents ?? (session?.mode === "synthetic_dev" ? 50000 : 0),
+    includeCook: initial?.includeCook ?? session?.mode === "synthetic_dev",
+    workdaysPerWeek: initial?.workdaysPerWeek ?? (session?.mode === "synthetic_dev" ? 5 : 0),
     contractValueCents: initial?.contractValueCents ?? 0,
     budgetLines: initial?.budgetLines ?? [],
   });
@@ -239,7 +239,7 @@ export function AssessmentWizard({ initial, onSave, onSyncOffline, onCancel }: A
       setStep(1);
       return;
     }
-    if (acceptedDistanceMeters <= 0) {
+    if (acceptedDistanceMeters <= 0 && submit) {
       toast.error("Enter a positive road distance in Step 2.");
       setStep(2);
       return;
@@ -249,7 +249,7 @@ export function AssessmentWizard({ initial, onSave, onSyncOffline, onCancel }: A
       setStep(2);
       return;
     }
-    if (validationErrors.length > 0) {
+    if (validationErrors.length > 0 && submit) {
       toast.error(validationErrors[0]!);
       return;
     }
@@ -259,6 +259,7 @@ export function AssessmentWizard({ initial, onSave, onSyncOffline, onCancel }: A
       await onSave(
         {
           ...(initial?.id ? { id: initial.id } : {}),
+          editVersion: initial?.editVersion??0,
           jobId: initial?.jobId ?? null,
           name,
           customerName,
@@ -280,14 +281,14 @@ export function AssessmentWizard({ initial, onSave, onSyncOffline, onCancel }: A
           distanceProvisional,
           sections,
           exclusions,
-          benchmarkId: initial?.benchmarkId ?? "bm-illustrative-1",
-          benchmarkProductivitySqm: initial?.benchmarkProductivitySqm ?? 250,
+          benchmarkId: initial?.benchmarkId ?? (session?.mode === "synthetic_dev" ? "bm-illustrative-1" : ""),
+          benchmarkProductivitySqm: initial?.benchmarkProductivitySqm ?? (session?.mode === "synthetic_dev" ? 250 : 0),
           benchmarkConfidence: initial?.benchmarkConfidence ?? "illustrative_assumption",
-          productiveCrewSize: initial?.productiveCrewSize ?? 12,
-          roadWorkerDailyRateCents: initial?.roadWorkerDailyRateCents ?? 25000,
-          cookWeeklyRateCents: initial?.cookWeeklyRateCents ?? 50000,
-          includeCook: initial?.includeCook ?? true,
-          workdaysPerWeek: initial?.workdaysPerWeek ?? 5,
+          productiveCrewSize: initial?.productiveCrewSize ?? (session?.mode === "synthetic_dev" ? 12 : 0),
+          roadWorkerDailyRateCents: initial?.roadWorkerDailyRateCents ?? (session?.mode === "synthetic_dev" ? 25000 : 0),
+          cookWeeklyRateCents: initial?.cookWeeklyRateCents ?? (session?.mode === "synthetic_dev" ? 50000 : 0),
+          includeCook: initial?.includeCook ?? session?.mode === "synthetic_dev",
+          workdaysPerWeek: initial?.workdaysPerWeek ?? (session?.mode === "synthetic_dev" ? 5 : 0),
           contractValueCents: initial?.contractValueCents ?? 0,
           budgetLines: initial?.budgetLines ?? [],
           reviewComment: initial?.reviewComment ?? null,

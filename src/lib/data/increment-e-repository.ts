@@ -15,8 +15,25 @@ import type {
 } from "@/lib/domain/increment-e-types";
 import { evaluatePreUseCheck } from "@/lib/domain/increment-e-calc";
 import { assertBusinessBoundary, can } from "@/lib/permissions";
-import { supabase } from "@/lib/supabase";
+import { readDatabaseStore, writeDatabaseStore, type TableMapping } from "@/lib/data/database-store";
 import { SYNTHETIC_BIZ_A, SYNTHETIC_BIZ_B, SYNTHETIC_JOB_1 } from "@/lib/data/synthetic-fixtures";
+
+
+const E_TABLES: TableMapping[] = [
+ {key:'assets',table:'assets'}, {key:'checks',table:'asset_checks'}, {key:'defects',table:'defects'},
+ {key:'services',table:'asset_services'}, {key:'reports',table:'weekly_reports',rename:{revisions:'revisions_json'}},
+ {key:'notifications',table:'notifications'}, {key:'preferences',table:'notification_preferences',rename:{weeklyReportReminderTimeSAST:'weekly_report_reminder_time_sast'}},
+];
+function defaultPreferences(businessId: string): NotificationPreferences {
+ return {businessId,weeklyReportReminderDay:'sunday',weeklyReportReminderTimeSAST:'17:00',largeExpenseThresholdCents:500000,cashShortfallAlertEnabled:true,missingReceiptAlertEnabled:true,smtpDigestEnabled:false,smtpConfigured:false,updatedAt:new Date().toISOString()};
+}
+async function loadEStore(session: AuthSession): Promise<SyntheticIncrementEStore> {
+ return session.mode === 'supabase' ? await readDatabaseStore(session, E_TABLES) as unknown as SyntheticIncrementEStore : loadStore();
+}
+async function saveEStore(session: AuthSession, store: SyntheticIncrementEStore, exclude: string[] = []): Promise<void> {
+ if (session.mode === 'supabase') await writeDatabaseStore(session, store, E_TABLES.filter(m=>!exclude.includes(m.key) && (session.role!=='supervisor' || !['assets','notifications'].includes(m.key))));
+ else saveStore(store);
+}
 
 const STORAGE_KEY = "worktrack.synthetic.increment_e.v1";
 
@@ -248,162 +265,10 @@ function sanitizeAssetForRole(asset: AssetRecord, session: AuthSession): AssetRe
 }
 
 export async function listIncrementEBundle(session: AuthSession): Promise<IncrementEBundle> {
-  const sb = supabase;
-  if (sb && session.mode === "supabase") {
-    // Live Supabase path — queries tables from migration 202611270006
-    const [assetsRes, checksRes, defectsRes, servicesRes, reportsRes, notifsRes, prefsRes] =
-      await Promise.all([
-        sb.from("assets").select("*").eq("business_id", session.businessId),
-        sb.from("asset_checks").select("*").eq("business_id", session.businessId),
-        sb.from("defects").select("*").eq("business_id", session.businessId),
-        sb.from("asset_services").select("*").eq("business_id", session.businessId),
-        sb.from("weekly_reports").select("*").eq("business_id", session.businessId),
-        sb.from("notifications").select("*").eq("business_id", session.businessId),
-        sb
-          .from("notification_preferences")
-          .select("*")
-          .eq("business_id", session.businessId)
-          .maybeSingle(),
-      ]);
-    if (assetsRes.error) throw new Error(assetsRes.error.message);
-    if (checksRes.error) throw new Error(checksRes.error.message);
-    if (defectsRes.error) throw new Error(defectsRes.error.message);
-    if (servicesRes.error) throw new Error(servicesRes.error.message);
-    if (reportsRes.error) throw new Error(reportsRes.error.message);
-    if (notifsRes.error) throw new Error(notifsRes.error.message);
-
-    const prefs: NotificationPreferences = prefsRes.data
-      ? {
-          businessId: session.businessId,
-          weeklyReportReminderDay: prefsRes.data.weekly_report_reminder_day,
-          weeklyReportReminderTimeSAST: prefsRes.data.weekly_report_reminder_time_sast,
-          largeExpenseThresholdCents: Number(prefsRes.data.large_expense_threshold_cents),
-          cashShortfallAlertEnabled: Boolean(prefsRes.data.cash_shortfall_alert_enabled),
-          missingReceiptAlertEnabled: Boolean(prefsRes.data.missing_receipt_alert_enabled),
-          smtpDigestEnabled: Boolean(prefsRes.data.smtp_digest_enabled),
-          smtpConfigured: Boolean(prefsRes.data.smtp_configured),
-          updatedAt: prefsRes.data.updated_at,
-        }
-      : createInitialStore().preferences[0]!;
-
-    return {
-      assets: (assetsRes.data ?? []).map((r: any) =>
-        sanitizeAssetForRole(
-          {
-            id: r.id,
-            businessId: r.business_id,
-            assetType: r.asset_type,
-            name: r.name,
-            makeModel: r.make_model,
-            registration: r.registration,
-            vin: r.vin,
-            ownerName: r.owner_name,
-            purchaseCostCents: r.purchase_cost_cents !== null ? Number(r.purchase_cost_cents) : null,
-            odometerKm: r.odometer_km !== null ? Number(r.odometer_km) : null,
-            serviceIntervalKm: r.service_interval_km !== null ? Number(r.service_interval_km) : null,
-            lastServiceOdometerKm:
-              r.last_service_odometer_km !== null ? Number(r.last_service_odometer_km) : null,
-            licenceExpiryDate: r.licence_expiry_date,
-            insuranceExpiryDate: r.insurance_expiry_date,
-            assignedJobId: r.assigned_job_id,
-            status: r.status,
-            active: Boolean(r.active),
-            createdAt: r.created_at,
-            updatedAt: r.updated_at,
-          },
-          session,
-        ),
-      ),
-      checks: (checksRes.data ?? []).map((c: any) => ({
-        id: c.id,
-        businessId: c.business_id,
-        assetId: c.asset_id,
-        jobId: c.job_id,
-        checkDate: c.check_date,
-        odometerKm: c.odometer_km !== null ? Number(c.odometer_km) : null,
-        items: c.items,
-        stopUseTriggered: Boolean(c.stop_use_triggered),
-        failedCriticalItems: c.failed_critical_items ?? [],
-        comment: c.comment ?? "",
-        photoNote: c.photo_note,
-        capturedOffline: Boolean(c.captured_offline),
-        syncStatus: c.sync_status,
-        checkedByUserId: c.checked_by_user_id,
-        checkedByName: c.checked_by_name,
-        createdAt: c.created_at,
-      })),
-      defects: (defectsRes.data ?? []).map((d: any) => ({
-        id: d.id,
-        businessId: d.business_id,
-        assetId: d.asset_id,
-        checkId: d.check_id,
-        severity: d.severity,
-        summary: d.summary,
-        reportedDate: d.reported_date,
-        reportedByUserId: d.reported_by_user_id,
-        reportedByName: d.reported_by_name,
-        status: d.status,
-        resolutionNotes: d.resolution_notes,
-        resolvedByUserId: d.resolved_by_user_id,
-        resolvedByName: d.resolved_by_name,
-        resolvedAt: d.resolved_at,
-        createdAt: d.created_at,
-      })),
-      services: (servicesRes.data ?? []).map((s: any) => ({
-        id: s.id,
-        businessId: s.business_id,
-        assetId: s.asset_id,
-        entryDate: s.entry_date,
-        entryType: s.entry_type,
-        odometerKm: s.odometer_km !== null ? Number(s.odometer_km) : null,
-        litres: s.litres !== null ? Number(s.litres) : null,
-        costCents: Number(s.cost_cents),
-        description: s.description,
-        createdBy: s.created_by,
-        createdAt: s.created_at,
-      })),
-      reports: (reportsRes.data ?? []).map((r: any) => ({
-        id: r.id,
-        businessId: r.business_id,
-        jobId: r.job_id,
-        weekStart: r.week_start,
-        weekEnd: r.week_end,
-        status: r.status,
-        currentRevision: Number(r.current_revision),
-        lockedSnapshot: r.locked_snapshot,
-        latestComment: r.latest_comment,
-        missingEvidenceAcknowledged: Boolean(r.missing_evidence_acknowledged),
-        submittedBy: r.submitted_by,
-        submittedAt: r.submitted_at,
-        reviewedBy: r.reviewed_by,
-        reviewedAt: r.reviewed_at,
-        revisions: r.revisions_json ?? [],
-        createdAt: r.created_at,
-        updatedAt: r.updated_at,
-      })),
-      notifications: (notifsRes.data ?? []).map((n: any) => ({
-        id: n.id,
-        businessId: n.business_id,
-        type: n.type,
-        severity: n.severity,
-        title: n.title,
-        body: n.body,
-        dedupKey: n.dedup_key,
-        linkTo: n.link_to,
-        readAt: n.read_at,
-        acknowledgedAt: n.acknowledged_at,
-        acknowledgedBy: n.acknowledged_by,
-        deliveryChannel: n.delivery_channel,
-        createdAt: n.created_at,
-      })),
-      preferences: prefs,
-    };
-  }
-
-  const store = loadStore();
+  const store = await loadEStore(session);
   const prefs =
     store.preferences.find((p) => p.businessId === session.businessId) ?? {
-      ...createInitialStore().preferences[0]!,
+      ...defaultPreferences(session.businessId),
       businessId: session.businessId,
     };
 
@@ -464,7 +329,7 @@ export async function createAsset(
   }
   const now = new Date().toISOString();
   const record: AssetRecord = {
-    id: `asset-${crypto.randomUUID().slice(0, 8)}`,
+    id: crypto.randomUUID(),
     businessId: session.businessId,
     assetType: input.assetType,
     name: input.name.trim(),
@@ -485,9 +350,9 @@ export async function createAsset(
     updatedAt: now,
   };
 
-  const store = loadStore();
+  const store = await loadEStore(session);
   store.assets.unshift(record);
-  saveStore(store);
+  await saveEStore(session, store);
   return record;
 }
 
@@ -512,7 +377,7 @@ export async function recordPreUseCheck(
     throw new Error("Odometer reading cannot be negative.");
   }
 
-  const store = loadStore();
+  const store = await loadEStore(session);
   if (input.idempotencyKey) {
     const existingCheck = store.checks.find(
       (c) => c.businessId === session.businessId && c.idempotencyKey === input.idempotencyKey,
@@ -539,7 +404,7 @@ export async function recordPreUseCheck(
   const offline = Boolean(input.isOffline);
 
   const check: AssetCheck = {
-    id: `chk-${crypto.randomUUID().slice(0, 8)}`,
+    id: crypto.randomUUID(),
     businessId: session.businessId,
     assetId: asset.id,
     jobId: input.jobId,
@@ -571,7 +436,7 @@ export async function recordPreUseCheck(
     asset.updatedAt = now;
 
     defect = {
-      id: `def-${crypto.randomUUID().slice(0, 8)}`,
+      id: crypto.randomUUID(),
       businessId: session.businessId,
       assetId: asset.id,
       checkId: check.id,
@@ -591,7 +456,7 @@ export async function recordPreUseCheck(
 
     const dedupKey = `defect:${defect.id}`;
     notification = {
-      id: `notif-${crypto.randomUUID().slice(0, 8)}`,
+      id: crypto.randomUUID(),
       businessId: session.businessId,
       type: "vehicle_stop_use",
       severity: "critical",
@@ -605,10 +470,10 @@ export async function recordPreUseCheck(
       deliveryChannel: "in_app_and_smtp_queued",
       createdAt: now,
     };
-    store.notifications.unshift(notification);
+    if (session.mode !== "supabase") store.notifications.unshift(notification);
   }
 
-  saveStore(store);
+  await saveEStore(session, store);
   return { check, defect, notification };
 }
 
@@ -624,7 +489,7 @@ export async function resolveAssetDefect(
     throw new Error("Resolution notes are required before returning the vehicle to service.");
   }
 
-  const store = loadStore();
+  const store = await loadEStore(session);
   const defect = store.defects.find((d) => d.id === defectId);
   if (!defect) throw new Error("Defect not found.");
   assertBusinessBoundary(session, defect.businessId, "defect");
@@ -645,7 +510,7 @@ export async function resolveAssetDefect(
     asset.updatedAt = now;
   }
 
-  saveStore(store);
+  await saveEStore(session, store, ["assets"]);
   return defect;
 }
 
@@ -667,14 +532,14 @@ export async function recordAssetServiceEntry(
   if (input.costCents < 0) throw new Error("Cost cannot be negative.");
   if (!input.description.trim()) throw new Error("Description is required.");
 
-  const store = loadStore();
+  const store = await loadEStore(session);
   const asset = store.assets.find((a) => a.id === input.assetId);
   if (!asset) throw new Error("Asset not found.");
   assertBusinessBoundary(session, asset.businessId, "asset");
 
   const now = new Date().toISOString();
   const entry: AssetServiceEntry = {
-    id: `svc-${crypto.randomUUID().slice(0, 8)}`,
+    id: crypto.randomUUID(),
     businessId: session.businessId,
     assetId: asset.id,
     entryDate: input.entryDate,
@@ -683,7 +548,7 @@ export async function recordAssetServiceEntry(
     litres: input.litres,
     costCents: Math.round(input.costCents),
     description: input.description.trim(),
-    createdBy: session.email,
+    createdBy: session.userId,
     createdAt: now,
   };
   store.services.unshift(entry);
@@ -694,7 +559,7 @@ export async function recordAssetServiceEntry(
     asset.lastServiceOdometerKm = input.odometerKm;
   }
   asset.updatedAt = now;
-  saveStore(store);
+  await saveEStore(session, store);
   return entry;
 }
 
@@ -723,7 +588,7 @@ export async function submitWeeklyReport(
     );
   }
 
-  const store = loadStore();
+  const store = await loadEStore(session);
   const now = new Date().toISOString();
   let report = store.reports.find(
     (r) =>
@@ -740,7 +605,7 @@ export async function submitWeeklyReport(
 
   if (!report) {
     report = {
-      id: `wrep-${crypto.randomUUID().slice(0, 8)}`,
+      id: crypto.randomUUID(),
       businessId: session.businessId,
       jobId: snapshot.jobId,
       weekStart: snapshot.weekStart,
@@ -770,7 +635,7 @@ export async function submitWeeklyReport(
   }
 
   report.revisions.push({
-    id: `wrev-${crypto.randomUUID().slice(0, 8)}`,
+    id: crypto.randomUUID(),
     reportId: report.id,
     revisionNumber: report.currentRevision,
     status: "submitted",
@@ -782,7 +647,7 @@ export async function submitWeeklyReport(
     createdAt: now,
   });
 
-  saveStore(store);
+  await saveEStore(session, store);
   return report;
 }
 
@@ -798,7 +663,7 @@ export async function returnWeeklyReport(
     throw new Error("Please enter specific comments explaining what must be fixed.");
   }
 
-  const store = loadStore();
+  const store = await loadEStore(session);
   const report = store.reports.find((r) => r.id === reportId);
   if (!report) throw new Error("Weekly report not found.");
   assertBusinessBoundary(session, report.businessId, "weekly report");
@@ -816,7 +681,7 @@ export async function returnWeeklyReport(
   report.reviewedAt = now;
   report.updatedAt = now;
   report.revisions.push({
-    id: `wrev-${crypto.randomUUID().slice(0, 8)}`,
+    id: crypto.randomUUID(),
     reportId: report.id,
     revisionNumber: report.currentRevision,
     status: "returned",
@@ -828,7 +693,7 @@ export async function returnWeeklyReport(
     createdAt: now,
   });
 
-  saveStore(store);
+  await saveEStore(session, store);
   return report;
 }
 
@@ -841,7 +706,7 @@ export async function approveWeeklyReport(
     throw new Error("Access denied: only Management / Admin can approve a weekly report.");
   }
 
-  const store = loadStore();
+  const store = await loadEStore(session);
   const report = store.reports.find((r) => r.id === reportId);
   if (!report) throw new Error("Weekly report not found.");
   assertBusinessBoundary(session, report.businessId, "weekly report");
@@ -860,7 +725,7 @@ export async function approveWeeklyReport(
   report.reviewedAt = now;
   report.updatedAt = now;
   report.revisions.push({
-    id: `wrev-${crypto.randomUUID().slice(0, 8)}`,
+    id: crypto.randomUUID(),
     reportId: report.id,
     revisionNumber: report.currentRevision,
     status: "approved",
@@ -872,7 +737,7 @@ export async function approveWeeklyReport(
     createdAt: now,
   });
 
-  saveStore(store);
+  await saveEStore(session, store);
   return report;
 }
 
@@ -887,7 +752,7 @@ export async function startWeeklyReportAmendment(
   if (!reason.trim()) {
     throw new Error("Please provide a documented reason for the amendment.");
   }
-  const store = loadStore();
+  const store = await loadEStore(session);
   const report = store.reports.find((r) => r.id === reportId);
   if (!report) throw new Error("Weekly report not found.");
   assertBusinessBoundary(session, report.businessId, "weekly report");
@@ -899,7 +764,7 @@ export async function startWeeklyReportAmendment(
   report.status = "draft";
   report.latestComment = `Amendment opened: ${reason.trim()}`;
   report.updatedAt = now;
-  saveStore(store);
+  await saveEStore(session, store);
   return report;
 }
 
@@ -907,10 +772,11 @@ export async function syncNotifications(
   session: AuthSession,
   evaluated: NotificationRecord[],
 ): Promise<NotificationRecord[]> {
-  const store = loadStore();
+  const store = await loadEStore(session);
   const otherBiz = store.notifications.filter((n) => n.businessId !== session.businessId);
-  store.notifications = [...evaluated, ...otherBiz];
-  saveStore(store);
+  store.notifications = [...store.notifications.filter(n => n.businessId === session.businessId), ...otherBiz];
+  for (const alert of evaluated) if (!store.notifications.some(n => n.businessId === session.businessId && n.dedupKey === alert.dedupKey)) store.notifications.push({...alert, id: crypto.randomUUID()});
+  await saveEStore(session, store);
   return evaluated;
 }
 
@@ -919,7 +785,12 @@ export async function markNotificationReadOrAck(
   notificationId: string,
   acknowledge: boolean,
 ): Promise<void> {
-  const store = loadStore();
+  if(session.mode==='supabase'){
+    const {supabase}=await import('@/lib/supabase');if(!supabase)throw new Error('Connection unavailable.');
+    const {error}=await supabase.from('notification_receipts').upsert({notification_id:notificationId,business_id:session.businessId,user_id:session.userId,read_at:new Date().toISOString(),...(acknowledge?{acknowledged_at:new Date().toISOString()}:{})},{onConflict:'notification_id,user_id'});
+    if(error)throw new Error(error.message);return;
+  }
+  const store = await loadEStore(session);
   const notif = store.notifications.find((n) => n.id === notificationId);
   if (!notif) return;
   assertBusinessBoundary(session, notif.businessId, "notification");
@@ -929,7 +800,7 @@ export async function markNotificationReadOrAck(
     notif.acknowledgedAt = now;
     notif.acknowledgedBy = session.fullName;
   }
-  saveStore(store);
+  await saveEStore(session, store);
 }
 
 export async function updateNotificationPreferences(
@@ -939,12 +810,12 @@ export async function updateNotificationPreferences(
   if (!can(session.role, "notifications.configure")) {
     throw new Error("Access denied: only Management / Admin can update notification preferences.");
   }
-  const store = loadStore();
+  const store = await loadEStore(session);
   const idx = store.preferences.findIndex((p) => p.businessId === session.businessId);
   const current =
     idx >= 0
-      ? store.preferences[idx]!
-      : { ...createInitialStore().preferences[0]!, businessId: session.businessId };
+      ? store.preferences[idx] ?? defaultPreferences(session.businessId)
+      : { ...defaultPreferences(session.businessId), businessId: session.businessId };
   const updated: NotificationPreferences = {
     ...current,
     ...patch,
@@ -956,6 +827,6 @@ export async function updateNotificationPreferences(
   } else {
     store.preferences.push(updated);
   }
-  saveStore(store);
+  await saveEStore(session, store);
   return updated;
 }

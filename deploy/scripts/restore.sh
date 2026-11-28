@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-: "${DATABASE_URL:?Set target DATABASE_URL before running restore.}"
-DUMP_FILE="${1:?Usage: ./restore.sh /path/to/worktrack-db-TIMESTAMP.dump}"
-STORAGE_TAR="${2:-}"
-TARGET_STORAGE_DIR="${TARGET_STORAGE_DIR:-}"
-
-if [[ -f "${DUMP_FILE}.sha256" ]]; then
-  sha256sum -c "${DUMP_FILE}.sha256"
-fi
-
-pg_restore --clean --if-exists --no-owner --dbname="$DATABASE_URL" "$DUMP_FILE"
-echo "Database restore completed from ${DUMP_FILE}."
-
-if [[ -n "$STORAGE_TAR" ]]; then
-  : "${TARGET_STORAGE_DIR:?Set TARGET_STORAGE_DIR when restoring a storage archive.}"
-  if [[ -f "${STORAGE_TAR}.sha256" ]]; then
-    sha256sum -c "${STORAGE_TAR}.sha256"
-  fi
-  mkdir -p "$TARGET_STORAGE_DIR"
-  tar -xzf "$STORAGE_TAR" -C "$TARGET_STORAGE_DIR"
-  echo "Private storage restored to ${TARGET_STORAGE_DIR}."
-fi
-
-echo "Restore completed. Run deploy/scripts/verify-restore-drill.sh before switching traffic."
+umask 077
+: "${DATABASE_URL:?Set isolated target DATABASE_URL}"
+: "${RESTORE_ISOLATED_CONFIRM:?Set RESTORE_ISOLATED_CONFIRM=ISOLATED TEST DATABASE after checking the target}"
+[[ "$RESTORE_ISOLATED_CONFIRM" == 'ISOLATED TEST DATABASE' ]] || exit 1
+DIR="${1:?Usage: restore.sh /path/to/validated-backup-directory}"
+: "${TARGET_STORAGE_DIR:?Set isolated Storage destination}"
+: "${TARGET_CONFIG_DIR:?Set isolated configuration extraction directory (never /)}"
+[[ "$TARGET_CONFIG_DIR" != / && "$TARGET_STORAGE_DIR" != / ]] || exit 1
+DIR="$DIR" python3 - <<'PY'
+import hashlib,json,os,pathlib
+p=pathlib.Path(os.environ['DIR']);m=json.loads((p/'manifest.json').read_text())
+for name,h in m['files'].items():
+ if pathlib.Path(name).name!=name or hashlib.sha256((p/name).read_bytes()).hexdigest()!=h: raise SystemExit('Checksum mismatch or unsafe filename: '+name)
+PY
+export PGDATABASE="$DATABASE_URL"
+pg_restore --exit-on-error --single-transaction --clean --if-exists --no-owner --dbname="$DATABASE_URL" "$DIR/database.dump"
+mkdir -p "$TARGET_STORAGE_DIR" "$TARGET_CONFIG_DIR"
+# Reject path traversal/absolute entries before extracting either archive.
+for archive in storage configuration; do
+ tar -tzf "$DIR/$archive.tar.gz" | python3 -c 'import sys,pathlib; names=sys.stdin.read().splitlines(); assert all(not pathlib.PurePosixPath(n).is_absolute() and ".." not in pathlib.PurePosixPath(n).parts for n in names), "Unsafe archive path"'
+done
+tar -xzf "$DIR/storage.tar.gz" --no-same-owner -C "$TARGET_STORAGE_DIR"
+tar -xzf "$DIR/configuration.tar.gz" --no-same-owner -C "$TARGET_CONFIG_DIR"
+echo 'Isolated restore completed; validate authentication, RLS, evidence and configuration before any production recovery.'

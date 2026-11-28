@@ -1,3 +1,4 @@
+import { FinanceMaintenancePanel } from "@/components/FinanceMaintenancePanel";
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -35,7 +36,8 @@ import { calculateFuelUnitCostCents } from "@/lib/domain/finance-calc";
 import { formatDateSA, formatZarCents, parseZarToCents, todaySAST } from "@/lib/format";
 import { can } from "@/lib/permissions";
 import { useOfflineSync } from "@/lib/offline/sync-context";
-import { enqueueOfflineMutation } from "@/lib/offline/sync-engine";
+import { prepareAttachmentFile, type PreparedAttachmentFile } from "@/lib/offline/attachment-utils";
+import { enqueueOfflineMutation, saveOfflineAttachment } from "@/lib/offline/sync-engine";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -75,7 +77,7 @@ interface ExpensesPanelProps {
 export function ExpensesPanel({ session, finance, jobs }: ExpensesPanelProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { effectiveOnline, refreshOfflineState } = useOfflineSync();
+  const { effectiveOnline, refreshOfflineState, syncNow } = useOfflineSync();
   const cashAccounts = React.useMemo(
     () => finance.accounts.filter((a) => a.isCashAccount && !a.isRestricted),
     [finance.accounts],
@@ -97,6 +99,7 @@ export function ExpensesPanel({ session, finance, jobs }: ExpensesPanelProps) {
   const [vehicleOrMachine, setVehicleOrMachine] = React.useState("");
   const [odometerKm, setOdometerKm] = React.useState("");
   const [receipt, setReceipt] = React.useState<ReceiptAttachmentMeta | null>(null);
+  const [receiptFile,setReceiptFile]=React.useState<PreparedAttachmentFile|null>(null);
   const [missingReason, setMissingReason] = React.useState("");
 
   // Expense request state
@@ -121,17 +124,12 @@ export function ExpensesPanel({ session, finance, jobs }: ExpensesPanelProps) {
   const handleReceiptFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const buf = await file.arrayBuffer();
-    const checksumSha256 = await computeSha256Hex(buf);
-    setReceipt({
-      fileName: file.name,
-      mimeType: file.type || "image/jpeg",
-      sizeBytes: file.size,
-      checksumSha256,
-      capturedAt: new Date().toISOString(),
-    });
-    setMissingReason("");
-    toast.success(`Receipt attached (${file.name}).`);
+    try {
+      const prepared=await prepareAttachmentFile(file);setReceiptFile(prepared);
+      setReceipt({fileName:prepared.fileName,mimeType:prepared.mimeType,sizeBytes:prepared.sizeBytes,checksumSha256:prepared.sha256Checksum,capturedAt:new Date().toISOString()});
+      setMissingReason('');toast.info('Receipt saved on this device. It will upload with the expense.');
+    } catch(error){toast.error(error instanceof Error?error.message:'Receipt could not be prepared.');}
+
   };
 
   const parsedAmount = parseZarToCents(amountRand);
@@ -175,16 +173,18 @@ export function ExpensesPanel({ session, finance, jobs }: ExpensesPanelProps) {
         if (!payload.receiptAttachment && !payload.missingReceiptReason?.trim()) {
           throw new Error("Attach a receipt photo or enter a missing-receipt reason.");
         }
-        await enqueueOfflineMutation(session, {
+        const mutation=await enqueueOfflineMutation(session, {
           entityType: "expense",
           operation: "create",
           label: `Expense: ${category.replace(/_/g, " ")} (${formatZarCents(parsedAmount)})`,
           payload,
         });
+        if(receiptFile)await saveOfflineAttachment(session,{linkedEntityType:'expense',linkedEntityId:mutation.clientUuid,linkedLabel:description||'Expense receipt',fileName:receiptFile.fileName,mimeType:receiptFile.mimeType,sizeBytes:receiptFile.sizeBytes,sha256Checksum:receiptFile.sha256Checksum,dataUrl:receiptFile.dataUrl,exifStripped:receiptFile.exifStripped,locationConsented:false,latitude:null,longitude:null,dependsOnMutationId:mutation.id});
         await refreshOfflineState();
         return { queuedOffline: true as const };
       }
       const exp = await recordExpense(session, payload);
+      if(receiptFile){await saveOfflineAttachment(session,{linkedEntityType:'expense',linkedEntityId:exp.id,linkedLabel:description||'Expense receipt',fileName:receiptFile.fileName,mimeType:receiptFile.mimeType,sizeBytes:receiptFile.sizeBytes,sha256Checksum:receiptFile.sha256Checksum,dataUrl:receiptFile.dataUrl,exifStripped:receiptFile.exifStripped,locationConsented:false,latitude:null,longitude:null});await refreshOfflineState();await syncNow(true);}
       return { queuedOffline: false as const, exp };
     },
     onSuccess: (result) => {
@@ -206,7 +206,7 @@ export function ExpensesPanel({ session, finance, jobs }: ExpensesPanelProps) {
       setFuelLitres("");
       setVehicleOrMachine("");
       setOdometerKm("");
-      setReceipt(null);
+      setReceipt(null);setReceiptFile(null);
       setMissingReason("");
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not record expense."),
@@ -254,6 +254,7 @@ export function ExpensesPanel({ session, finance, jobs }: ExpensesPanelProps) {
       </TabsList>
 
       <TabsContent value="capture" className="space-y-4">
+        <FinanceMaintenancePanel session={session} finance={finance} jobs={jobs} kind="settlement"/>
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base">Capture expense</CardTitle>

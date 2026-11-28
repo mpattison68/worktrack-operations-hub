@@ -1,3 +1,5 @@
+import {useOfflineSync} from "@/lib/offline/sync-context";
+import {enqueueOfflineMutation} from "@/lib/offline/sync-engine";
 import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -79,6 +81,7 @@ const VERGE_LABELS: Record<VergeSide, string> = {
 function WorkProgressPage() {
   const { session } = useWorkTrackAuth();
   const qc = useQueryClient();
+  const {effectiveOnline,refreshOfflineState}=useOfflineSync();
   const initialWeek = useMemo(() => getMonSunWeekRange(todaySAST()), []);
   const [weekStart, setWeekStart] = useState(initialWeek.start);
   const weekRange = useMemo(() => getMonSunWeekRange(weekStart), [weekStart]);
@@ -161,7 +164,7 @@ function WorkProgressPage() {
       }
       const startM = Number(startChainage);
       const endM = Number(endChainage);
-      return createProgressEntries(session, {
+      const input = {
         jobId: activeJobId,
         section: activeSection,
         vergeSides: selectedSides,
@@ -175,9 +178,13 @@ function WorkProgressPage() {
         gpsAccuracyMeters: gpsAccuracy,
         photoDate: photoDate || null,
         evidenceNote,
-      });
+      };
+      if(!effectiveOnline){if(!Number.isFinite(startM)||!Number.isFinite(endM)||startM<0||endM<=startM||selectedSides.length===0)throw new Error('Enter a valid completed range and verge strips.');await enqueueOfflineMutation(session,{entityType:'progress_entry',operation:'create',label:`Work progress ${reportedDate}`,payload:{kind:'progress',input}});await refreshOfflineState();return {queued:true,created:[]};}
+      return {queued:false,created:await createProgressEntries(session,input)};
     },
-    onSuccess: (created) => {
+    onSuccess: (result) => {
+      const created=result.created;
+      if(result.queued){toast.info("Saved on phone — awaiting sync.");return;}
       qc.invalidateQueries({ queryKey: ["work-progress", session?.businessId, activeJobId] });
       const flagged = created.some((c) => c.verificationState === "flagged_conflict");
       toast.success(
@@ -204,6 +211,7 @@ function WorkProgressPage() {
   const saveInterruptionMutation = useMutation({
     mutationFn: async () => {
       if (!session || !activeJobId) throw new Error("Select a job first.");
+      if(!effectiveOnline)throw new Error("Reconnect before recording an interruption.");
       return createInterruption(session, {
         jobId: activeJobId,
         interruptionDate: intDate,

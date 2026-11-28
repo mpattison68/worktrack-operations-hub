@@ -1,3 +1,6 @@
+import { applyOperationalCapture, type OperationalKind } from "@/lib/offline/operational-capture";
+import { saveAssessmentDraft } from "@/lib/data/assessment-repository";
+import { getCaptureEpoch, fetchServerEpoch } from "@/lib/offline/data-epoch";
 import type { AuthSession } from "@/lib/domain/types";
 import type {
   ExpenseCategory,
@@ -12,7 +15,7 @@ import {
   updateExpenseWithRevision,
 } from "@/lib/data/increment-d-repository";
 import { recordPreUseCheck } from "@/lib/data/increment-e-repository";
-import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { supabase } from "@/lib/supabase";
 import {
   clearPartition,
   deleteConflict,
@@ -65,11 +68,13 @@ export async function enqueueOfflineMutation<TPayload = Record<string, unknown>>
     }
   }
 
+  const dataEpoch = await getCaptureEpoch(session);
   const now = new Date().toISOString();
   const clientUuid = crypto.randomUUID();
   const mutation: OfflineMutation<TPayload> = {
     id: `mut-${clientUuid.slice(0, 12)}`,
     clientUuid,
+    dataEpoch,
     idempotencyKey: input.idempotencyKey ?? `${input.entityType}:${input.operation}:${clientUuid}`,
     businessId: session.businessId,
     userId: session.userId,
@@ -113,7 +118,7 @@ export async function saveOfflineAttachment(
   },
 ): Promise<{ attachment: OfflineAttachment; mutation: OfflineMutation }> {
   const now = new Date().toISOString();
-  const id = `att-${crypto.randomUUID().slice(0, 12)}`;
+  const id = crypto.randomUUID();
   const attachment: OfflineAttachment = {
     id,
     businessId: session.businessId,
@@ -207,6 +212,15 @@ async function executeMutation(
 ): Promise<{ status: "synced" | "conflict"; createdEntityId?: string; conflict?: ConflictRecord }> {
   const payload = mutation.payload as Record<string, unknown>;
 
+  if(mutation.entityType==='attendance'||mutation.entityType==='progress_entry'){
+    const result=await applyOperationalCapture(session,payload['kind'] as OperationalKind,payload['input'] as Record<string,unknown>,mutation.baseRevision??0,mutation.idempotencyKey,mutation.dataEpoch);
+    if(result.status==='conflict')return{status:'conflict',conflict:{id:crypto.randomUUID(),mutationId:mutation.id,businessId:session.businessId,userId:session.userId,partitionKey:mutation.partitionKey,entityType:mutation.entityType,entityId:String(result.server?.['id']??mutation.entityId??''),entityLabel:mutation.label,baseRevision:mutation.baseRevision??0,serverRevision:result.revision??0,localPayload:payload,serverPayload:result.server??{},detectedAt:new Date().toISOString(),resolvedAt:null,resolution:null}};
+    return{status:'synced',createdEntityId:result.entityId??''};
+  }
+  if(mutation.entityType==='assessment_waypoint'){
+    const saved=await saveAssessmentDraft(session,{...(payload['input'] as unknown as Parameters<typeof saveAssessmentDraft>[1]),idempotencyKey:mutation.idempotencyKey});
+    return{status:'synced',createdEntityId:saved.id};
+  }
   if (mutation.entityType === "expense" && mutation.operation === "create") {
     const created = await recordExpense(session, {
       jobId: (payload["jobId"] as string | null) ?? null,
@@ -308,23 +322,38 @@ async function executeMutation(
 
     // If this attachment depended on an offline parent mutation, bind the resolved server ID
     if (mutation.dependsOnMutationId && resolvedParentIds.has(mutation.dependsOnMutationId)) {
-      att.linkedEntityId = resolvedParentIds.get(mutation.dependsOnMutationId)!;
+      const parentId = resolvedParentIds.get(mutation.dependsOnMutationId);
+      if (parentId) att.linkedEntityId = parentId;
     }
 
     att.uploadStatus = "uploading";
     await putAttachment(att);
 
-    const storagePath = `${session.businessId}/${att.linkedEntityType}/${att.linkedEntityId}/${att.id}-${att.fileName}`;
-    if (isSupabaseConfigured && supabase) {
+    const storagePath = `${session.businessId}/${att.linkedEntityType}/${att.linkedEntityId}/${mutation.dataEpoch ?? 1}/${att.id}`;
+    if (session.mode === 'supabase') {
+      if (!supabase) throw new Error('Connection unavailable.');
       const bytes = dataUrlToBytes(att.dataUrl);
-      const { error } = await supabase.storage
-        .from("worktrack-evidence")
-        .upload(storagePath, bytes, { contentType: att.mimeType, upsert: true });
-      if (error) {
-        att.uploadStatus = "failed";
-        att.lastError = error.message;
-        await putAttachment(att);
-        throw new Error(`Attachment upload failed: ${error.message}`);
+      const existing = await supabase.from('evidence_attachments').select('id,upload_status').eq('id',att.id).maybeSingle();
+      if (existing.error) throw new Error(existing.error.message);
+      if (existing.data?.upload_status !== 'uploaded') {
+        if (!existing.data) {
+          const reservation = await supabase.from('evidence_attachments').insert({
+            id:att.id,business_id:session.businessId,linked_entity_type:att.linkedEntityType,linked_entity_id:att.linkedEntityId,linked_label:att.linkedLabel,
+            file_name:att.fileName,mime_type:att.mimeType,file_size_bytes:bytes.byteLength,sha256_checksum:att.sha256Checksum,
+            storage_path:storagePath,exif_stripped:att.exifStripped,location_consented:att.locationConsented,latitude:att.latitude,longitude:att.longitude,
+            uploaded_by:session.userId,captured_at:att.capturedAt,data_epoch:mutation.dataEpoch,upload_status:'pending',
+          });
+          if (reservation.error) throw new Error(`Evidence metadata could not be saved: ${reservation.error.message}`);
+        }
+        const uploaded = await supabase.storage.from('worktrack-evidence').upload(storagePath,bytes,{contentType:att.mimeType,upsert:false});
+        // A retry may encounter the object from a prior interrupted upload.
+        if (uploaded.error && !/already exists|duplicate/i.test(uploaded.error.message)) throw new Error(uploaded.error.message);
+        const finalized = await supabase.rpc('worktrack_finalize_evidence',{p_id:att.id});
+        if (finalized.error) {
+          const removed = await supabase.storage.from('worktrack-evidence').remove([storagePath]);
+          if (!removed.error) await supabase.from('evidence_attachments').delete().eq('id',att.id).eq('upload_status','pending');
+          throw new Error(`Evidence finalization failed; ${removed.error ? 'cleanup needs attention' : 'unfinished object removed'}: ${finalized.error.message}`);
+        }
       }
     }
 
@@ -364,7 +393,8 @@ export async function runSyncEngine(
   const syncedIds = new Set(
     allMutations.filter((m) => m.status === "synced").map((m) => m.id),
   );
-  const resolvedParentIds = new Map<string, string>();
+  const resolvedParentIds = new Map<string, string>(allMutations.filter(m=>m.status==='synced' && m.entityId).map(m=>[m.id,m.entityId ?? '']));
+  const serverEpoch = await fetchServerEpoch(session);
 
   let attempted = 0;
   let synced = 0;
@@ -381,6 +411,9 @@ export async function runSyncEngine(
       continue;
     }
 
+    if (session.mode === 'supabase' && m.dataEpoch !== serverEpoch) {
+      m.status='failed'; m.attempts=m.maxAttempts; m.lastError='Obsolete data from before the business reset. Discard this record; it cannot be uploaded.'; await putMutation(m); continue;
+    }
     attempted += 1;
     m.status = "syncing";
     m.updatedAt = new Date().toISOString();
@@ -409,6 +442,11 @@ export async function runSyncEngine(
         synced += 1;
       }
     } catch (err) {
+      if(err && typeof err==='object' && 'conflictData' in err){
+        const data=err.conflictData as {server:Record<string,unknown>;revision:number};
+        m.status='conflict';m.lastError='Assessment changed; review both versions.';await putMutation(m);
+        await putConflict({id:crypto.randomUUID(),mutationId:m.id,businessId:session.businessId,userId:session.userId,partitionKey:m.partitionKey,entityType:m.entityType,entityId:String(data.server['id']),entityLabel:m.label,baseRevision:m.baseRevision??0,serverRevision:data.revision,localPayload:m.payload,serverPayload:data.server,detectedAt:new Date().toISOString(),resolvedAt:null,resolution:null});conflicts+=1;continue;
+      }
       m.attempts += 1;
       m.status = "failed";
       m.lastError = err instanceof Error ? err.message : "Sync failed.";
@@ -420,7 +458,7 @@ export async function runSyncEngine(
   }
 
   const finishedAt = new Date().toISOString();
-  if (synced > 0 || attempted === 0) {
+  if (failed === 0 && conflicts === 0 && (synced > 0 || allMutations.every(m => m.status === "synced"))) {
     await setLastSyncAt(session.businessId, session.userId, finishedAt);
   }
   return { attempted, synced, conflicts, failed, skippedOffline: false, completedAt: finishedAt };
@@ -441,6 +479,11 @@ export async function resolveConflictRecord(
   const mutation = mutations.find((m) => m.id === conflict.mutationId);
 
   if (resolution === "apply_local_as_new_revision") {
+    if(conflict.entityType==='assessment_waypoint'){await saveAssessmentDraft(session,{...(conflict.localPayload['input'] as unknown as Parameters<typeof saveAssessmentDraft>[1]),editVersion:conflict.serverRevision,idempotencyKey:mutation?.idempotencyKey??crypto.randomUUID()});}
+    if(conflict.entityType==='attendance'||conflict.entityType==='progress_entry'){
+      const result=await applyOperationalCapture(session,conflict.localPayload['kind'] as OperationalKind,conflict.localPayload['input'] as Record<string,unknown>,conflict.serverRevision,mutation?.idempotencyKey??crypto.randomUUID());
+      if(result.status==='conflict')throw new Error('Record changed again; review the new server version.');
+    }
     if (conflict.entityType === "expense") {
       const payload = conflict.localPayload;
       const res = await updateExpenseWithRevision(

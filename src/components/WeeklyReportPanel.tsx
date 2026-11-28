@@ -28,6 +28,7 @@ import {
 } from "@/lib/data/increment-e-repository";
 import { calculateJobProgress } from "@/lib/domain/progress-calc";
 import { assembleWeeklyReportSnapshot } from "@/lib/domain/increment-e-calc";
+import { listAssessmentsAndBenchmarks } from "@/lib/data/assessment-repository";
 import { can } from "@/lib/permissions";
 import {
   formatDateSA,
@@ -116,6 +117,7 @@ export function WeeklyReportPanel() {
     enabled: Boolean(session),
   });
 
+  const scopesQuery=useQuery({queryKey:['assessments',session?.businessId,session?.userId],queryFn:()=>{if(!session)throw new Error('Sign in required');return listAssessmentsAndBenchmarks(session);},enabled:Boolean(session)});
   const existingReport = React.useMemo(
     () =>
       (incEQuery.data?.reports ?? []).find(
@@ -126,7 +128,7 @@ export function WeeklyReportPanel() {
 
   const liveSnapshot = React.useMemo(() => {
     if (!activeJob) return null;
-    const scope = getDefaultScopeForJob(activeJob.id);
+    const scope = scopesQuery.data?.assessments.find(a=>a.jobId===activeJob.id)?.revisions.at(-1)?.sections ?? (session?.mode==="synthetic_dev"?getDefaultScopeForJob(activeJob.id):[]);
     const progressEntries = progressQuery.data?.entries ?? [];
     const calc = calculateJobProgress(scope, progressEntries);
     const finance = financeQuery.data ?? {
@@ -162,6 +164,7 @@ export function WeeklyReportPanel() {
     });
   }, [
     activeJob,
+    scopesQuery.data,
     weekRange,
     progressQuery.data,
     attendanceQuery.data,

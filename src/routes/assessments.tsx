@@ -1,3 +1,5 @@
+import {useOfflineSync} from "@/lib/offline/sync-context";
+import {enqueueOfflineMutation} from "@/lib/offline/sync-engine";
 import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -39,6 +41,7 @@ export const Route = createFileRoute("/assessments")({
 function AssessmentsPage() {
   const { session } = useWorkTrackAuth();
   const queryClient = useQueryClient();
+  const {effectiveOnline,refreshOfflineState}=useOfflineSync();
   const [mode, setMode] = React.useState<"list" | "wizard" | "review">("list");
   const [selected, setSelected] = React.useState<SiteAssessment | null>(null);
 
@@ -103,6 +106,7 @@ function AssessmentsPage() {
         }}
         onSave={async (data, submit) => {
           try {
+            if(!effectiveOnline){await enqueueOfflineMutation(session,{entityType:'assessment_waypoint',operation:'update',entityId:data.id??null,label:`Assessment draft: ${data.name}`,payload:{input:{...data,id:data.id??crypto.randomUUID(),status:'draft'}},baseRevision:data.editVersion??0});await refreshOfflineState();toast.info('Draft and waypoints saved on phone. Reconnect to sync, then submit for review.');setMode('list');return;}
             const saved = await saveAssessmentDraft(session, data);
             await refresh();
             setSelected(saved);

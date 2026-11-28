@@ -177,6 +177,7 @@ export async function listAssessmentsAndBenchmarks(
       })),
       assessments: (asData ?? []).map((a) => ({
         id: a.id,
+        editVersion:Number(a.edit_version??1),
         businessId: a.business_id,
         jobId: a.job_id,
         name: a.name,
@@ -241,6 +242,7 @@ export async function saveAssessmentDraft(
   session: AuthSession,
   input: Omit<SiteAssessment, "id" | "businessId" | "createdAt" | "updatedAt" | "createdByEmail"> & {
     id?: string;
+    idempotencyKey?: string;
   },
 ): Promise<SiteAssessment> {
   if (!can(session.role, "assessments.create")) {
@@ -248,11 +250,11 @@ export async function saveAssessmentDraft(
   }
   if (!input.name.trim()) throw new Error("Job or road name is required.");
   if (!input.roadOrArea.trim()) throw new Error("Road or area is required.");
-  if (input.acceptedDistanceMeters <= 0) {
+  if (input.acceptedDistanceMeters <= 0 && input.status !== "draft") {
     throw new Error("Road distance must be greater than 0 metres.");
   }
   const sectionErrors = validateAssessmentSections(input.sections);
-  if (sectionErrors.length > 0) {
+  if (sectionErrors.length > 0 && input.status !== "draft") {
     throw new Error(sectionErrors[0]!);
   }
 
@@ -307,50 +309,17 @@ export async function saveAssessmentDraft(
       review_comment: input.reviewComment,
       revisions_json: input.revisions,
     };
-    const query = input.id
-      ? supabase
-          .from("assessments")
-          .update(payload)
-          .eq("id", input.id)
-          .eq("business_id", session.businessId)
-          .select("*")
-          .single()
-      : supabase
-          .from("assessments")
-          .insert({ ...payload, created_by: session.userId, created_by_email: session.email })
-          .select("*")
-          .single();
-    const { data, error } = await query;
-    if (error || !data) throw new Error(error?.message ?? "Failed to save assessment.");
-
-    // Persist normalized route points into assessment_route_points
-    await supabase
-      .from("assessment_route_points")
-      .delete()
-      .eq("assessment_id", data.id)
-      .eq("business_id", session.businessId);
-    if (normalizedRoutePoints.length > 0) {
-      const rows = normalizedRoutePoints.map((pt) => ({
-        business_id: session.businessId,
-        assessment_id: data.id,
-        client_point_id: pt.clientPointId,
-        point_type: pt.pointType,
-        sequence_number: pt.sequenceNumber,
-        latitude: pt.latitude,
-        longitude: pt.longitude,
-        gps_accuracy_meters: pt.gpsAccuracyMeters,
-        captured_at: pt.capturedAt,
-        captured_by: pt.capturedByUserId ?? session.userId,
-        captured_by_email: pt.capturedByEmail || session.email,
-        capture_method: pt.captureMethod,
-      }));
-      const { error: ptErr } = await supabase.from("assessment_route_points").insert(rows);
-      if (ptErr) throw new Error(ptErr.message);
-    }
+    const {data: epochRow,error:epochError}=await supabase.from('businesses').select('data_epoch').eq('id',session.businessId).single();
+    if(epochError)throw new Error(epochError.message);
+    const {data: result,error}=await supabase.rpc('worktrack_save_assessment',{p_business:session.businessId,p_epoch:epochRow.data_epoch,p_payload:{...payload,...(input.id?{id:input.id}:{})},p_expected_version:input.editVersion??0,p_key:input.idempotencyKey??crypto.randomUUID()});
+    if(error)throw new Error(error.message);
+    if(result.status==='conflict')throw Object.assign(new Error('Assessment changed on another device. Refresh and review before saving.'),{conflictData:result});
+    const data=result.record;
 
     return {
       ...input,
       id: data.id,
+      editVersion:Number(data.edit_version??1),
       businessId: data.business_id,
       startGps: derivedStartEnd.startGps,
       endGps: derivedStartEnd.endGps,
@@ -416,6 +385,7 @@ export async function syncOfflineWaypoints(
   assessmentId: string,
 ): Promise<{ assessment: SiteAssessment; syncedCount: number }> {
   const queued = getOfflineWaypoints(assessmentId);
+  if(session.mode==='supabase')throw new Error('Legacy unpartitioned waypoints are not uploaded. Save the full assessment using the protected offline queue.');
   const { assessments } = await listAssessmentsAndBenchmarks(session);
   const target = assessments.find((a) => a.id === assessmentId);
   if (!target) throw new Error("Assessment not found.");
@@ -506,6 +476,7 @@ export async function approveAssessmentScope(
   const sectionErrors = validateAssessmentSections(assessment.sections);
   if (sectionErrors.length > 0) throw new Error(sectionErrors[0]!);
 
+  if (assessment.benchmarkProductivitySqm<=0 || assessment.productiveCrewSize<=0 || assessment.roadWorkerDailyRateCents<=0 || assessment.workdaysPerWeek<=0 || (assessment.includeCook && assessment.cookWeeklyRateCents<=0)) throw new Error('Enter confirmed planning productivity, crew, wage rates and working calendar before approval.');
   const sizing = calculateAssessmentSizing({
     sections: assessment.sections,
     benchmarkProductivitySqm: assessment.benchmarkProductivitySqm,

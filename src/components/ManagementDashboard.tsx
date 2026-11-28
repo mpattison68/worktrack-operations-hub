@@ -33,6 +33,7 @@ import {
   listJobProgressBundle,
   listPayrollRuns,
 } from "@/lib/data/increment-c-repository";
+import { listAssessmentsAndBenchmarks } from "@/lib/data/assessment-repository";
 import { listFinanceBundle } from "@/lib/data/increment-d-repository";
 import { listIncrementEBundle } from "@/lib/data/increment-e-repository";
 import { calculateJobProgress } from "@/lib/domain/progress-calc";
@@ -101,11 +102,17 @@ export function ManagementDashboard() {
     enabled: Boolean(session),
   });
 
+  const assessmentQuery = useQuery({
+    queryKey: ['assessments', session?.businessId, session?.userId],
+    queryFn: () => { if (!session) throw new Error('Sign in required'); return listAssessmentsAndBenchmarks(session); },
+    enabled: Boolean(session),
+  });
   if (!session) return null;
 
   const progressEntries = progressQuery.data?.entries ?? [];
   const interruptions = progressQuery.data?.interruptions ?? [];
-  const scope = activeJob ? getDefaultScopeForJob(activeJob.id) : [];
+  const approvedAssessment = assessmentQuery.data?.assessments.find(a => a.jobId === activeJob?.id && a.revisions.length > 0);
+  const scope = approvedAssessment?.revisions.at(-1)?.sections ?? (session.mode === 'synthetic_dev' && activeJob ? getDefaultScopeForJob(activeJob.id) : []);
   const progressCalc = calculateJobProgress(scope, progressEntries);
 
   const totalDowntimeHours = interruptions.reduce((s, i) => s + i.durationHours, 0);
@@ -120,10 +127,10 @@ export function ManagementDashboard() {
 
   // Financial metrics (Admin & Owner only)
   const finance = financeQuery.data;
-  const payrollRuns = (payrollQuery.data ?? []).filter((r) => r.status !== "superseded");
+  const payrollRuns = (payrollQuery.data ?? []).filter((r) => r.status === "approved");
   const wagesEarnedCents = payrollRuns.reduce((s, r) => s + r.netTotalCents, 0);
-  const wagesPaidCents = (finance?.wagePayments ?? []).reduce((s, w) => s + w.totalAmountCents, 0);
-  const expenses = finance?.expenses ?? [];
+  const wagesPaidCents = (finance?.wagePayments ?? []).filter(p => !activeJob || p.jobId === activeJob.id).reduce((s, w) => s + w.totalAmountCents, 0);
+  const expenses = (finance?.expenses ?? []).filter(e => !activeJob || e.jobId === activeJob.id);
   const opexCents = expenses
     .filter((e) => e.classification === "operating")
     .reduce((s, e) => s + e.amountCents, 0);
@@ -146,30 +153,10 @@ export function ManagementDashboard() {
       ? calculateLoanBalanceCents(loan, finance.loanEvents).remainingPrincipalCents
       : 0;
 
-  const forecast = canFinancial
-    ? calculateWeeklyCashForecast({
-        openingUnrestrictedCashCents: cashSummary.unrestrictedCashCents,
-        weeklyCashCostCents: 2850000,
-        weeksCount: 6,
-        startWeekDate: currentWeek.start,
-        expectedReceipts: (finance?.milestones ?? [])
-          .filter((m) => m.status !== "received")
-          .slice(0, 2)
-          .map((m, idx) => ({
-            weekIndex: (idx + 1) * 3,
-            amountCents: Math.max(0, m.expectedAmountCents - m.receivedAmountCents),
-            label: m.label,
-          })),
-      })
-    : null;
-
-  // Chart datasets
-  const plannedVsActualData = [
-    { week: "Wk 1", planned: 20, actual: Math.min(100, Math.round(progressCalc.effortWeightedPercent * 0.35)) },
-    { week: "Wk 2", planned: 45, actual: Math.min(100, Math.round(progressCalc.effortWeightedPercent * 0.65)) },
-    { week: "Wk 3", planned: 70, actual: Math.min(100, Math.round(progressCalc.effortWeightedPercent * 0.85)) },
-    { week: "Wk 4", planned: 100, actual: Math.round(progressCalc.effortWeightedPercent) },
-  ];
+  // No automatic wage assumptions. Forecasts are explicitly entered in Cash flow.
+  const assumption=finance?.forecastAssumptions?.find(a=>a.jobId===activeJob?.id);
+  const forecast = assumption && activeJob ? calculateWeeklyCashForecast({openingUnrestrictedCashCents:cashSummary.unrestrictedCashCents,weeklyCashCostCents:assumption.weeklyCashCostCents,existingArrearsCents:assumption.existingArrearsCents,receiptDelayWeeks:assumption.receiptDelayWeeks,weeksCount:6,startWeekDate:currentWeek.start,expectedReceipts:(finance?.milestones??[]).filter(m=>m.jobId===activeJob.id&&m.status!=='received').map(m=>({weekIndex:Math.max(0,Math.floor((Date.parse(m.expectedDate)-Date.parse(currentWeek.start))/604800000)),amountCents:Math.max(0,m.expectedAmountCents-m.receivedAmountCents),label:m.label}))}) : null;
+  const plannedVsActualData = activeJob && scope.length > 0 ? [{week: formatDateSA(today), actual: Math.round(progressCalc.effortWeightedPercent)}] : [];
 
   const costByCategoryMap = new Map<string, number>();
   for (const e of expenses) {
@@ -200,7 +187,7 @@ export function ManagementDashboard() {
             {session.role === "admin" ? en.nav.overview : en.nav.home}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Signed in as {session.fullName} ({en.roles[session.role]}). Increments A–E active.
+            {session.fullName} · {en.roles[session.role]}
           </p>
         </div>
 
@@ -240,6 +227,8 @@ export function ManagementDashboard() {
         </div>
       </div>
 
+      {jobsQuery.isError || financeQuery.isError || incEQuery.isError ? <p role="alert" className="rounded-md border border-destructive p-3 text-destructive">Records could not be loaded. Check your connection and retry; balances are not confirmed.</p> : null}
+      {!jobsQuery.isLoading && jobs.length === 0 && <p className="border-y border-border py-4 text-muted-foreground">No jobs recorded. Your business is ready for its next job.</p>}
       {/* Critical alerts strip */}
       {openCriticalDefects.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border-2 border-status-danger bg-status-danger-bg p-4 text-status-danger">
@@ -431,25 +420,24 @@ export function ManagementDashboard() {
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">Planned vs actual progress (%)</CardTitle>
-                  <Badge variant="outline">Planned vs Actual</Badge>
+                  <CardTitle className="text-base">Actual job progress (%)</CardTitle>
+                  <Badge variant="outline">Actual</Badge>
                 </div>
                 <CardDescription>
-                  Cumulative effort-weighted completion against schedule milestones.
+                  Cumulative effort-weighted completion from recorded work.
                 </CardDescription>
               </CardHeader>
               <CardContent className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
+                {plannedVsActualData.length === 0 ? <p className="text-sm text-muted-foreground">No approved job scope or schedule recorded.</p> : <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={plannedVsActualData}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="week" fontSize={12} />
                     <YAxis domain={[0, 100]} fontSize={12} unit="%" />
                     <Tooltip />
                     <Legend />
-                    <Line type="monotone" dataKey="planned" name="Planned %" stroke="#64748b" strokeDasharray="4 4" strokeWidth={2} />
                     <Line type="monotone" dataKey="actual" name="Actual %" stroke="#15803d" strokeWidth={2.5} />
                   </LineChart>
-                </ResponsiveContainer>
+                </ResponsiveContainer>}
               </CardContent>
             </Card>
 
@@ -489,11 +477,11 @@ export function ManagementDashboard() {
                   <Badge variant="outline">Estimated</Badge>
                 </div>
                 <CardDescription>
-                  Excludes restricted funds. Click Cash flow to test delayed-receipt scenarios.
+                  Excludes restricted funds. {assumption?.notes ?? "No saved assumptions."}
                 </CardDescription>
               </CardHeader>
               <CardContent className="h-56">
-                <ResponsiveContainer width="100%" height="100%">
+                {forecastChartData.length === 0 ? <p className="text-sm text-muted-foreground">No forecast assumptions saved. Enter a job plan and explicit outflows in Cash flow.</p> : <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={forecastChartData}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="week" fontSize={12} />
@@ -501,25 +489,14 @@ export function ManagementDashboard() {
                     <Tooltip />
                     <Bar dataKey="closingRand" name="Closing cash (ZAR)" fill="#2563eb" radius={[4, 4, 0, 0]} />
                   </BarChart>
-                </ResponsiveContainer>
+                </ResponsiveContainer>}
               </CardContent>
             </Card>
           </div>
         </>
       )}
 
-      {/* Release increment status footer */}
-      <Card>
-        <CardContent className="flex flex-wrap items-center justify-between gap-2 py-3 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <CheckCircle2 className="h-4 w-4 text-status-ok" />
-            Increments A–E active · Increment F (full offline IndexedDB sync &amp; VM hardening) next.
-          </span>
-          <Link to="/jobs" className="font-medium text-primary hover:underline">
-            View all jobs ({jobs.length})
-          </Link>
-        </CardContent>
-      </Card>
+      <Link to="/jobs" className="text-sm font-medium text-primary">View all jobs ({jobs.length})</Link>
     </div>
   );
 }

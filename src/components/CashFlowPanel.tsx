@@ -1,3 +1,4 @@
+import { FinanceMaintenancePanel } from "@/components/FinanceMaintenancePanel";
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeftRight, CheckCircle2, Scale, TrendingDown } from "lucide-react";
@@ -8,6 +9,8 @@ import {
   recordCashReconciliation,
   recordCustomerMilestoneReceipt,
   recordOrMatchTransfer,
+  setupFinanceAccounts,
+  saveForecastAssumption,
 } from "@/lib/data/increment-d-repository";
 import { calculateWeeklyCashForecast, computeCashSummary } from "@/lib/domain/finance-calc";
 import { formatDateSA, formatZarCents, getMonSunWeekRange, parseZarToCents, todaySAST } from "@/lib/format";
@@ -61,14 +64,17 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
   const [msAmounts, setMsAmounts] = React.useState<Record<string, string>>({});
 
   // Forecast what-if assumptions (never edits actuals)
-  const [weeklyCostRand, setWeeklyCostRand] = React.useState("28500");
+  const [weeklyCostRand, setWeeklyCostRand] = React.useState("");
   const [delayWeeks, setDelayWeeks] = React.useState("0");
   const [arrearsRand, setArrearsRand] = React.useState("0");
 
+  const [forecastJob,setForecastJob]=React.useState(jobs[0]?.id??''),[assumptionNote,setAssumptionNote]=React.useState('');
+  React.useEffect(()=>{const saved=finance.forecastAssumptions?.find(a=>a.jobId===forecastJob);setWeeklyCostRand(saved?String(saved.weeklyCashCostCents/100):'');setArrearsRand(saved?String(saved.existingArrearsCents/100):'0');setDelayWeeks(String(saved?.receiptDelayWeeks??0));setAssumptionNote(saved?.notes??'');},[finance.forecastAssumptions,forecastJob]);
+  const saveForecast=useMutation({mutationFn:()=>saveForecastAssumption(session,{jobId:forecastJob,weeklyCashCostCents:parseZarToCents(weeklyCostRand)??0,existingArrearsCents:parseZarToCents(arrearsRand)??0,receiptDelayWeeks:Number(delayWeeks),notes:assumptionNote}),onSuccess:()=>{queryClient.invalidateQueries({queryKey:['finance']});toast.success('Forecast assumptions saved to server; actuals unchanged.');},onError:e=>toast.error(e.message)});
   const currentMonday = getMonSunWeekRange(todaySAST()).start;
 
   const forecast = React.useMemo(() => {
-    const weeklyCostCents = parseZarToCents(weeklyCostRand) ?? 2850000;
+    const weeklyCostCents = parseZarToCents(weeklyCostRand) ?? 0;
     const arrearsCents = parseZarToCents(arrearsRand) ?? 0;
     const expectedReceipts = finance.milestones
       .filter((m) => m.status !== "received")
@@ -162,6 +168,7 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not post receipt."),
   });
 
+  const setupMutation = useMutation({mutationFn: () => setupFinanceAccounts(session), onSuccess: () => { queryClient.invalidateQueries({queryKey:['finance']}); toast.success('Zero-balance accounts saved to server.'); }, onError: (err) => toast.error(err.message)});
   const canAdminReconcile = can(session.role, "payroll.reconcile");
   const accName = (id: string | null) =>
     finance.accounts.find((a) => a.id === id)?.name ?? "External / N/A";
@@ -169,6 +176,7 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
 
   return (
     <div className="space-y-4">
+      {finance.accounts.length === 0 && <div className="flex flex-wrap items-center justify-between gap-3 border-y border-border py-3"><p className="text-sm text-muted-foreground">No cash accounts configured. Opening balances are zero.</p>{session.role === 'admin' && <Button onClick={() => setupMutation.mutate()} disabled={setupMutation.isPending}>Set up zero-balance accounts</Button>}</div>}
       {/* Account Balances Summary */}
       <div className="grid gap-3 sm:grid-cols-3">
         <Card>
@@ -222,6 +230,7 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-3">
+                <div><Label htmlFor="forecast-job">Job for this forecast</Label><select id="forecast-job" className="h-11 w-full rounded-md border border-input bg-background px-3" value={forecastJob} onChange={e=>setForecastJob(e.target.value)}><option value="">Choose an existing job</option>{jobs.map(j=><option key={j.id} value={j.id}>{j.name}</option>)}</select></div>
                 <div className="space-y-1">
                   <Label htmlFor="fc-cost">Weekly cash outflows (ZAR)</Label>
                   <Input id="fc-cost" inputMode="decimal" value={weeklyCostRand} onChange={(e) => setWeeklyCostRand(e.target.value)} className="touch-target tabular-money" />
@@ -236,6 +245,7 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
                 </div>
               </div>
 
+              <div><Label htmlFor="forecast-note">Assumptions and source</Label><Input id="forecast-note" value={assumptionNote} onChange={e=>setAssumptionNote(e.target.value)}/>{session.role==='admin'&&<Button className="mt-2" disabled={!forecastJob||!assumptionNote.trim()||saveForecast.isPending} onClick={()=>saveForecast.mutate()}>Save forecast assumptions</Button>}</div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
@@ -389,6 +399,7 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
 
         {/* TAB 3: CUSTOMER PAYMENT MILESTONES */}
         <TabsContent value="milestones" className="space-y-3">
+          <FinanceMaintenancePanel session={session} finance={finance} jobs={jobs} kind="invoice"/>
           {finance.milestones.map((ms) => (
             <Card key={ms.id}>
               <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4 text-xs">

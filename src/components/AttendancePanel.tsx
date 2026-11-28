@@ -1,3 +1,6 @@
+import { useOfflineSync } from "@/lib/offline/sync-context";
+import { enqueueOfflineMutation } from "@/lib/offline/sync-engine";
+import { applyOperationalCapture } from "@/lib/offline/operational-capture";
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { format, parseISO } from "date-fns";
@@ -60,6 +63,7 @@ export function AttendancePanel({
   otherJobAttendance,
 }: AttendancePanelProps) {
   const qc = useQueryClient();
+  const {effectiveOnline,refreshOfflineState}=useOfflineSync();
   const dates = useMemo(() => getWeekDates(weekStartDate), [weekStartDate]);
   const weekEndDate = dates[6]!;
   const roleMap = useMemo(() => new Map(roles.map((r) => [r.id, r])), [roles]);
@@ -117,10 +121,14 @@ export function AttendancePanel({
   };
 
   const saveTeamDayMutation = useMutation({
-    mutationFn: (payload: Parameters<typeof upsertTeamDay>[1]) => upsertTeamDay(session, payload),
-    onSuccess: () => {
+    mutationFn: async (payload: Parameters<typeof upsertTeamDay>[1]) => {
+      const base=teamByDate.get(payload.workDate)?.revision??0;
+      if(!effectiveOnline){await enqueueOfflineMutation(session,{entityType:'attendance',operation:'update',label:`Team attendance ${payload.workDate}`,payload:{kind:'team',input:payload},baseRevision:base});await refreshOfflineState();return 'queued';}
+      const result=await applyOperationalCapture(session,'team',payload as unknown as Record<string,unknown>,base,crypto.randomUUID());if(result.status==='conflict')throw new Error('Attendance changed on another device. Refresh before saving.');return 'saved';
+    },
+    onSuccess: (status) => {
       invalidate();
-      toast.success("Team day pattern updated (individual exceptions preserved).");
+      toast.success(status === "queued" ? "Saved on phone — awaiting sync." : "Team day saved to server (individual exceptions preserved).");
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -139,9 +147,9 @@ export function AttendancePanel({
   });
 
   const saveExceptionMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!activeWorkerId) throw new Error("Select a worker.");
-      return upsertWorkerAttendanceOverride(session, {
+      const input = {
         jobId,
         workerId: activeWorkerId,
         workDate: activeExDate,
@@ -152,11 +160,14 @@ export function AttendancePanel({
         sundayHours: Number(exSun) || 0,
         publicHolidayHours: Number(exPh) || 0,
         overrideReason: exReason || "Individual schedule entry",
-      });
+      };
+      const base=attendanceEntries.find(a=>a.workerId===activeWorkerId&&a.workDate===activeExDate)?.revision??0;
+      if(!effectiveOnline){await enqueueOfflineMutation(session,{entityType:'attendance',operation:'update',label:`Worker attendance ${activeExDate}`,payload:{kind:'exception',input},baseRevision:base});await refreshOfflineState();return 'queued';}
+      const result=await applyOperationalCapture(session,'exception',input,base,crypto.randomUUID());if(result.status==='conflict')throw new Error('Worker attendance changed; refresh before saving.');return 'saved';
     },
-    onSuccess: () => {
+    onSuccess: (status) => {
       invalidate();
-      toast.success("Worker day attendance saved.");
+      toast.success(status === "queued" ? "Saved on phone — awaiting sync." : "Worker attendance saved to server.");
       setExReason("");
     },
     onError: (err: Error) => toast.error(err.message),
@@ -164,7 +175,7 @@ export function AttendancePanel({
 
   const resetExceptionMutation = useMutation({
     mutationFn: ({ workerId, workDate }: { workerId: string; workDate: string }) =>
-      resetWorkerDayToTeam(session, jobId, workerId, workDate),
+      effectiveOnline ? resetWorkerDayToTeam(session, jobId, workerId, workDate) : Promise.reject(new Error("Reconnect before resetting an exception.")),
     onSuccess: () => {
       invalidate();
       toast.success("Reset worker day back to team pattern.");
@@ -228,7 +239,7 @@ export function AttendancePanel({
             type="button"
             variant="outline"
             className="touch-target gap-2"
-            disabled={copyPriorMutation.isPending}
+            disabled={copyPriorMutation.isPending || !effectiveOnline}
             onClick={() => copyPriorMutation.mutate()}
           >
             <Copy className="h-4 w-4" />

@@ -27,13 +27,13 @@ export const Route = createFileRoute("/auth")({
 });
 
 function AuthPage() {
-  const { session, backendMode, signInWithPassword, signInSynthetic } = useWorkTrackAuth();
+  const { session, backendMode, connectionState, signInWithPassword, signInSynthetic } = useWorkTrackAuth();
   const navigate = useNavigate();
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [forgotMode, setForgotMode] = React.useState(false);
-  const [syntheticAccounts, setSyntheticAccounts] = React.useState(() => listSyntheticAccounts());
+  const [syntheticAccounts, setSyntheticAccounts] = React.useState(() => import.meta.env.DEV ? listSyntheticAccounts() : []);
 
   React.useEffect(() => {
     if (session) {
@@ -148,7 +148,7 @@ function AuthPage() {
 
               <Button
                 type="submit"
-                disabled={submitting || (backendMode === "synthetic_dev" && !forgotMode)}
+                disabled={submitting || (backendMode !== "supabase" && !forgotMode)}
                 className="w-full touch-target"
               >
                 <KeyRound className="mr-2 h-4 w-4" />
@@ -168,6 +168,8 @@ function AuthPage() {
           </CardContent>
         </Card>
 
+        {backendMode === "unconfigured" && <p role="alert" className="rounded-md border border-destructive p-3 text-sm text-destructive">Backend connection is not configured. No demonstration data is available in production.</p>}
+        {connectionState === "error" && backendMode === "supabase" && <p role="alert" className="text-sm text-destructive">Connection could not be confirmed. Check your connection and try again.</p>}
         {backendMode === "synthetic_dev" && (
           <Card className="border-status-warn/40 bg-card">
             <CardHeader className="pb-3">

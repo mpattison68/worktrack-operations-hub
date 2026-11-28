@@ -198,6 +198,7 @@ export interface AssessmentRevisionSnapshot {
 }
 
 export interface SiteAssessment {
+  editVersion?: number;
   id: string;
   businessId: string;
   jobId: string | null;

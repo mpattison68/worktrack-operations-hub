@@ -14,10 +14,18 @@ const supabaseAnonKey =
     (import.meta.env["VITE_SUPABASE_PUBLISHABLE_KEY"] as string | undefined)
   )?.trim() ?? "";
 
+let activeDataEpoch: number | null = null;
+export function setClientDataEpoch(epoch: number | null): void { activeDataEpoch = epoch; }
+
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
 export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey, {
+      global: { fetch: (input, init) => {
+        const headers=new Headers(init?.headers);
+        if(activeDataEpoch !== null) headers.set('x-worktrack-epoch',String(activeDataEpoch));
+        return fetch(input,{...init,headers});
+      }},
       auth: {
         persistSession: true,
         autoRefreshToken: true,

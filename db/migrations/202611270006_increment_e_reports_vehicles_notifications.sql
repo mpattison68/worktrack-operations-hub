@@ -30,12 +30,12 @@ ALTER TABLE public.assets ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY assets_select_member ON public.assets
   FOR SELECT TO authenticated
-  USING (public.is_business_member(business_id));
+  USING (public.has_business_role(business_id, ARRAY['admin', 'owner', 'supervisor']::public.app_role[]));
 
 CREATE POLICY assets_write_admin_owner ON public.assets
   FOR ALL TO authenticated
-  USING (public.has_business_role(business_id, ARRAY['admin', 'owner']))
-  WITH CHECK (public.has_business_role(business_id, ARRAY['admin', 'owner']));
+  USING (public.has_business_role(business_id, ARRAY['admin', 'owner']::public.app_role[]))
+  WITH CHECK (public.has_business_role(business_id, ARRAY['admin', 'owner']::public.app_role[]));
 
 CREATE TABLE IF NOT EXISTS public.asset_checks (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -62,11 +62,11 @@ ALTER TABLE public.asset_checks ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY asset_checks_select_member ON public.asset_checks
   FOR SELECT TO authenticated
-  USING (public.is_business_member(business_id));
+  USING (public.has_business_role(business_id, ARRAY['admin', 'owner', 'supervisor']::public.app_role[]));
 
 CREATE POLICY asset_checks_insert_member ON public.asset_checks
   FOR INSERT TO authenticated
-  WITH CHECK (public.is_business_member(business_id));
+  WITH CHECK (public.has_business_role(business_id, ARRAY['admin', 'owner', 'supervisor']::public.app_role[]));
 
 CREATE TABLE IF NOT EXISTS public.defects (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -92,16 +92,16 @@ ALTER TABLE public.defects ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY defects_select_member ON public.defects
   FOR SELECT TO authenticated
-  USING (public.is_business_member(business_id));
+  USING (public.has_business_role(business_id, ARRAY['admin', 'owner', 'supervisor']::public.app_role[]));
 
 CREATE POLICY defects_insert_member ON public.defects
   FOR INSERT TO authenticated
-  WITH CHECK (public.is_business_member(business_id));
+  WITH CHECK (public.has_business_role(business_id, ARRAY['admin', 'owner', 'supervisor']::public.app_role[]));
 
 CREATE POLICY defects_resolve_admin_owner ON public.defects
   FOR UPDATE TO authenticated
-  USING (public.has_business_role(business_id, ARRAY['admin', 'owner']))
-  WITH CHECK (public.has_business_role(business_id, ARRAY['admin', 'owner']));
+  USING (public.has_business_role(business_id, ARRAY['admin', 'owner']::public.app_role[]))
+  WITH CHECK (public.has_business_role(business_id, ARRAY['admin', 'owner']::public.app_role[]));
 
 CREATE TABLE IF NOT EXISTS public.asset_services (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -123,8 +123,8 @@ ALTER TABLE public.asset_services ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY asset_services_admin_owner ON public.asset_services
   FOR ALL TO authenticated
-  USING (public.has_business_role(business_id, ARRAY['admin', 'owner']))
-  WITH CHECK (public.has_business_role(business_id, ARRAY['admin', 'owner']));
+  USING (public.has_business_role(business_id, ARRAY['admin', 'owner']::public.app_role[]))
+  WITH CHECK (public.has_business_role(business_id, ARRAY['admin', 'owner']::public.app_role[]));
 
 CREATE TABLE IF NOT EXISTS public.weekly_reports (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -153,12 +153,12 @@ ALTER TABLE public.weekly_reports ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY weekly_reports_select_admin_owner ON public.weekly_reports
   FOR SELECT TO authenticated
-  USING (public.has_business_role(business_id, ARRAY['admin', 'owner']));
+  USING (public.has_business_role(business_id, ARRAY['admin', 'owner']::public.app_role[]));
 
 CREATE POLICY weekly_reports_write_admin_owner ON public.weekly_reports
   FOR ALL TO authenticated
-  USING (public.has_business_role(business_id, ARRAY['admin', 'owner']))
-  WITH CHECK (public.has_business_role(business_id, ARRAY['admin', 'owner']));
+  USING (public.has_business_role(business_id, ARRAY['admin', 'owner']::public.app_role[]))
+  WITH CHECK (public.has_business_role(business_id, ARRAY['admin', 'owner']::public.app_role[]));
 
 -- Prevent silent edits to locked_snapshot once approved unless an amendment opens draft status
 CREATE OR REPLACE FUNCTION public.guard_approved_weekly_report()
@@ -201,8 +201,8 @@ ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY notifications_member_access ON public.notifications
   FOR ALL TO authenticated
-  USING (public.is_business_member(business_id))
-  WITH CHECK (public.is_business_member(business_id));
+  USING (public.has_business_role(business_id, ARRAY['admin', 'owner', 'supervisor']::public.app_role[]))
+  WITH CHECK (public.has_business_role(business_id, ARRAY['admin', 'owner', 'supervisor']::public.app_role[]));
 
 CREATE TABLE IF NOT EXISTS public.notification_preferences (
   business_id uuid PRIMARY KEY REFERENCES public.businesses(id) ON DELETE CASCADE,
@@ -222,9 +222,9 @@ ALTER TABLE public.notification_preferences ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY notification_prefs_select_member ON public.notification_preferences
   FOR SELECT TO authenticated
-  USING (public.is_business_member(business_id));
+  USING (public.has_business_role(business_id, ARRAY['admin', 'owner', 'supervisor']::public.app_role[]));
 
 CREATE POLICY notification_prefs_write_admin ON public.notification_preferences
   FOR ALL TO authenticated
-  USING (public.has_business_role(business_id, ARRAY['admin']))
-  WITH CHECK (public.has_business_role(business_id, ARRAY['admin']));
+  USING (public.has_business_role(business_id, ARRAY['admin']::public.app_role[]))
+  WITH CHECK (public.has_business_role(business_id, ARRAY['admin']::public.app_role[]));

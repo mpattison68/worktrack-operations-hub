@@ -1,3 +1,4 @@
+import { FinanceMaintenancePanel } from "@/components/FinanceMaintenancePanel";
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2, Landmark, ShieldCheck } from "lucide-react";
@@ -118,6 +119,7 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
       <Card>
         <CardContent className="py-8 text-center text-sm text-muted-foreground">
           No loan account configured for this business.
+          <FinanceMaintenancePanel session={session} finance={finance} kind="loan"/>
         </CardContent>
       </Card>
     );

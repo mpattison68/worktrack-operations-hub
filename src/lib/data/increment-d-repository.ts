@@ -31,8 +31,30 @@ import {
   validateBalancedJournalLines,
 } from "@/lib/domain/finance-calc";
 import { assertBusinessBoundary, can } from "@/lib/permissions";
-import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { readDatabaseStore, writeDatabaseStore, type TableMapping } from "@/lib/data/database-store";
 import { SYNTHETIC_BIZ_A, SYNTHETIC_JOB_1, SYNTHETIC_JOB_2 } from "@/lib/data/synthetic-fixtures";
+
+
+const FINANCE_TABLES: TableMapping[] = [
+ {key:'accounts',table:'accounts'},
+ {key:'journalEntries',table:'journal_entries',children:{key:'lines',table:'journal_lines',foreignKey:'journal_entry_id'}},
+ {key:'wagePayments',table:'wage_payments',children:{key:'allocations',table:'wage_allocations',foreignKey:'wage_payment_id'}},
+ {key:'expenses',table:'expenses',rename:{receiptAttachment:'receipt_attachment'}},
+ {key:'expenseRequests',table:'expense_requests'}, {key:'transfers',table:'transfers'},
+ {key:'reconciliations',table:'reconciliations'}, {key:'milestones',table:'payment_milestones'},
+ {key:'loans',table:'loans'}, {key:'loanEvents',table:'loan_events'},
+ {key:'customerReceipts',table:'customer_receipts'}, {key:'expenseSettlements',table:'expense_settlements'}, {key:'forecastAssumptions',table:'forecast_assumptions'},
+];
+async function loadFinanceStore(session: AuthSession): Promise<FinanceBundle> {
+ if (session.mode !== 'supabase') return loadStore();
+ const state = await readDatabaseStore(session, FINANCE_TABLES) as unknown as FinanceBundle;
+ for (const entry of state.journalEntries) for (const line of entry.lines) line.accountType = state.accounts.find(a => a.id === line.accountId)?.accountType ?? 'cash';
+ return state;
+}
+async function saveFinanceStore(session: AuthSession, state: FinanceBundle): Promise<void> {
+ if (session.mode === 'supabase') await writeDatabaseStore(session, state, FINANCE_TABLES);
+ else saveStore(state);
+}
 
 const STORAGE_KEY = "worktrack_synthetic_increment_d_v1";
 
@@ -236,58 +258,7 @@ function appendBalancedJournalEntry(
 export async function listFinanceBundle(session: AuthSession): Promise<FinanceBundle> {
   const canViewFinance = can(session.role, "loans.view") || can(session.role, "payroll.view");
 
-  if (isSupabaseConfigured && supabase) {
-    const { data: expData } = await supabase
-      .from("expenses")
-      .select("*")
-      .eq("business_id", session.businessId)
-      .order("expense_date", { ascending: false });
-    // Full Supabase hydration falls back gracefully to empty arrays when tables are empty
-    const mappedExpenses: ExpenseRecord[] = (expData ?? []).map((e) => ({
-      id: e.id,
-      businessId: e.business_id,
-      jobId: e.job_id,
-      expenseDate: e.expense_date,
-      category: e.category,
-      classification: e.classification,
-      amountCents: Number(e.amount_cents),
-      paidAmountCents: Number(e.paid_amount_cents),
-      paymentStatus: e.payment_status,
-      accountId: e.account_id,
-      method: e.method,
-      supplierName: e.supplier_name ?? "",
-      description: e.description ?? "",
-      reference: e.reference ?? "",
-      fuelLitres: e.fuel_litres === null ? null : Number(e.fuel_litres),
-      fuelPricePerLitreCents: e.fuel_price_per_litre_cents === null ? null : Number(e.fuel_price_per_litre_cents),
-      vehicleOrMachine: e.vehicle_or_machine ?? "",
-      odometerKm: e.odometer_km === null ? null : Number(e.odometer_km),
-      receiptAttachment: null,
-      missingReceiptReason: e.missing_receipt_reason,
-      needsReview: e.needs_review,
-      duplicateWarningFlag: e.duplicate_warning_flag,
-      expenseRequestId: e.expense_request_id,
-      unapprovedExceptionFlag: e.unapproved_exception_flag,
-      journalEntryId: e.journal_entry_id,
-      evidenceStatus: e.evidence_status,
-      recordedBy: e.recorded_by,
-      createdAt: e.created_at,
-    }));
-    return {
-      accounts: [],
-      journalEntries: [],
-      wagePayments: [],
-      expenses: mappedExpenses,
-      expenseRequests: [],
-      transfers: [],
-      reconciliations: [],
-      milestones: [],
-      loans: [],
-      loanEvents: [],
-    };
-  }
-
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   const bizExpenses = state.expenses.filter((e) => e.businessId === session.businessId);
   const bizRequests = state.expenseRequests.filter((r) => r.businessId === session.businessId);
 
@@ -320,6 +291,7 @@ export async function listFinanceBundle(session: AuthSession): Promise<FinanceBu
     milestones: state.milestones.filter((m) => m.businessId === session.businessId),
     loans: state.loans.filter((l) => l.businessId === session.businessId),
     loanEvents: state.loanEvents.filter((ev) => ev.businessId === session.businessId),
+    customerReceipts:state.customerReceipts ?? [],expenseSettlements:state.expenseSettlements ?? [],forecastAssumptions:state.forecastAssumptions ?? [],
   };
 }
 
@@ -345,7 +317,7 @@ export async function recordBulkWagePayment(
     throw new Error("Select at least one worker with a positive ZAR payment amount.");
   }
 
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   const payAccount = state.accounts.find((a) => a.id === input.accountId);
   if (!payAccount || !payAccount.isCashAccount) {
     throw new Error("Select a valid cash or bank account.");
@@ -369,7 +341,7 @@ export async function recordBulkWagePayment(
       existingAllocations,
       preferredRunId: input.preferredRunId ?? null,
     }),
-  );
+  ).map(allocation => ({...allocation,id:newId()}));
 
   const totalAmountCents = nonZero.reduce((sum, item) => sum + item.amountCents, 0);
   const allocatedTotal = allAllocations.reduce((sum, a) => sum + a.amountCents, 0);
@@ -407,7 +379,7 @@ export async function recordBulkWagePayment(
         memo: `Cash outflow (${input.method})`,
       },
     ],
-    createdBy: session.email,
+    createdBy: session.userId,
   });
 
   const payment: WagePayment = {
@@ -423,13 +395,13 @@ export async function recordBulkWagePayment(
     evidenceNote: input.evidenceNote.trim(),
     journalEntryId: journal.id,
     allocations: allAllocations,
-    recordedBy: session.email,
-    verifiedBy: session.role === "admin" ? session.email : null,
+    recordedBy: session.userId,
+    verifiedBy: session.role === "admin" ? session.userId : null,
     createdAt: new Date().toISOString(),
   };
 
   state.wagePayments.unshift(payment);
-  saveStore(state);
+  await saveFinanceStore(session, state);
   return payment;
 }
 
@@ -441,15 +413,15 @@ export async function updateWagePaymentEvidenceStatus(
   if (!can(session.role, "payroll.reconcile")) {
     throw new Error("Access denied: only Management / Admin can verify or dispute payment evidence.");
   }
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   const payment = state.wagePayments.find((p) => p.id === paymentId);
   if (!payment) throw new Error("Wage payment not found.");
   assertBusinessBoundary(session, payment.businessId, "wage payment");
   payment.evidenceStatus = status;
-  payment.verifiedBy = status === "verified" ? session.email : null;
+  payment.verifiedBy = status === "verified" ? session.userId : null;
   const je = state.journalEntries.find((j) => j.id === payment.journalEntryId);
   if (je) je.evidenceStatus = status;
-  saveStore(state);
+  await saveFinanceStore(session, state);
 }
 
 export async function recordExpense(
@@ -496,7 +468,7 @@ export async function recordExpense(
     throw new Error("Supervisors can only capture expenses for their assigned jobs.");
   }
 
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   if (input.idempotencyKey) {
     const existingByKey = state.expenses.find(
       (e) => e.businessId === session.businessId && e.idempotencyKey === input.idempotencyKey,
@@ -554,7 +526,7 @@ export async function recordExpense(
           memo: `Paid via ${input.method}`,
         },
       ],
-      createdBy: session.email,
+      createdBy: session.userId,
     });
     journalEntryId = je.id;
   }
@@ -579,21 +551,21 @@ export async function recordExpense(
     vehicleOrMachine: input.vehicleOrMachine.trim(),
     odometerKm: input.odometerKm,
     receiptAttachment: input.receiptAttachment,
-    missingReceiptReason: input.receiptAttachment ? null : input.missingReceiptReason!.trim(),
+    missingReceiptReason: input.receiptAttachment ? null : input.missingReceiptReason?.trim() ?? null,
     needsReview: !input.receiptAttachment || Boolean(dup) || Boolean(input.unapprovedExceptionFlag),
     duplicateWarningFlag: Boolean(dup),
     expenseRequestId: input.expenseRequestId ?? null,
     unapprovedExceptionFlag: Boolean(input.unapprovedExceptionFlag),
     journalEntryId,
     evidenceStatus,
-    recordedBy: session.email,
+    recordedBy: session.userId,
     createdAt: new Date().toISOString(),
     revision: 1,
     ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
   };
 
   state.expenses.unshift(record);
-  saveStore(state);
+  await saveFinanceStore(session, state);
   return record;
 }
 
@@ -617,7 +589,7 @@ export async function updateExpenseWithRevision(
     missingReceiptReason?: string | null;
   },
 ): Promise<ExpenseUpdateConflictResult> {
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   const expense = state.expenses.find(
     (e) => e.id === expenseId && e.businessId === session.businessId,
   );
@@ -639,7 +611,7 @@ export async function updateExpenseWithRevision(
     expense.missingReceiptReason = changes.missingReceiptReason;
   }
   expense.revision = currentRevision + 1;
-  saveStore(state);
+  await saveFinanceStore(session, state);
   return {
     status: "updated",
     expense,
@@ -655,7 +627,7 @@ export async function createExpenseRequest(
     throw new Error("Estimated amount must be a positive ZAR value.");
   }
   if (!input.description.trim()) throw new Error("Describe what the expense request is for.");
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   const req: ExpenseRequest = {
     id: newId(),
     businessId: session.businessId,
@@ -664,13 +636,13 @@ export async function createExpenseRequest(
     estimatedAmountCents: input.estimatedAmountCents,
     description: input.description.trim(),
     status: "pending",
-    requestedBy: session.email,
+    requestedBy: session.userId,
     reviewedBy: null,
     reviewComment: "",
     createdAt: new Date().toISOString(),
   };
   state.expenseRequests.unshift(req);
-  saveStore(state);
+  await saveFinanceStore(session, state);
   return req;
 }
 
@@ -683,14 +655,14 @@ export async function reviewExpenseRequest(
   if (!can(session.role, "payroll.reconcile")) {
     throw new Error("Access denied: only Management / Admin can approve or decline expense requests.");
   }
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   const req = state.expenseRequests.find((r) => r.id === requestId);
   if (!req) throw new Error("Expense request not found.");
   assertBusinessBoundary(session, req.businessId, "expense request");
   req.status = decision;
-  req.reviewedBy = session.email;
+  req.reviewedBy = session.userId;
   req.reviewComment = comment.trim();
-  saveStore(state);
+  await saveFinanceStore(session, state);
 }
 
 export async function recordOrMatchTransfer(
@@ -716,7 +688,7 @@ export async function recordOrMatchTransfer(
     throw new Error("Enter a shared transfer reference so Admin and Owner records can be matched.");
   }
 
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   const normRef = input.sharedReference.trim().toLowerCase();
   const now = new Date().toISOString();
 
@@ -777,11 +749,12 @@ export async function recordOrMatchTransfer(
           memo: `Contra: ${creditAcc.name}`,
         },
       ],
-      createdBy: session.email,
+      createdBy: session.userId,
     });
 
     if (t.transferKind === "lender_advance") {
       const mainLoan = state.loans.find((l) => l.businessId === session.businessId);
+      if (!mainLoan) throw new Error("Create the loan account before confirming a lender advance.");
       if (mainLoan && !state.loanEvents.some((ev) => ev.journalEntryId === je.id)) {
         state.loanEvents.unshift({
           id: newId(),
@@ -797,7 +770,7 @@ export async function recordOrMatchTransfer(
           note: t.description || "Matched lender advance",
           evidenceStatus: "verified",
           journalEntryId: je.id,
-          recordedBy: session.email,
+          recordedBy: session.userId,
           createdAt: now,
         });
       }
@@ -808,9 +781,9 @@ export async function recordOrMatchTransfer(
 
   if (existing) {
     if (session.role === "admin" && !existing.reportedByAdmin) {
-      existing.reportedByAdmin = { userId: session.email, note: input.note.trim(), recordedAt: now };
+      existing.reportedByAdmin = { userId: session.userId, note: input.note.trim(), recordedAt: now };
     } else if (session.role === "owner" && !existing.confirmedByOwner) {
-      existing.confirmedByOwner = { userId: session.email, note: input.note.trim(), recordedAt: now };
+      existing.confirmedByOwner = { userId: session.userId, note: input.note.trim(), recordedAt: now };
     } else {
       throw new Error("Your side of this transfer reference has already been recorded.");
     }
@@ -820,7 +793,7 @@ export async function recordOrMatchTransfer(
       const je = postTransferJournal(existing);
       existing.journalEntryId = je.id;
     }
-    saveStore(state);
+    await saveFinanceStore(session, state);
     return { transfer: existing, matchedExisting: true };
   }
 
@@ -841,16 +814,16 @@ export async function recordOrMatchTransfer(
     description: input.description.trim(),
     transferKind: input.transferKind,
     reportedByAdmin:
-      session.role === "admin" ? { userId: session.email, note: input.note.trim(), recordedAt: now } : null,
+      session.role === "admin" ? { userId: session.userId, note: input.note.trim(), recordedAt: now } : null,
     confirmedByOwner:
-      session.role === "owner" ? { userId: session.email, note: input.note.trim(), recordedAt: now } : null,
+      session.role === "owner" ? { userId: session.userId, note: input.note.trim(), recordedAt: now } : null,
     status: "pending_match",
     journalEntryId: null,
     createdAt: now,
   };
 
   state.transfers.unshift(transfer);
-  saveStore(state);
+  await saveFinanceStore(session, state);
   return { transfer, matchedExisting: false };
 }
 
@@ -861,7 +834,7 @@ export async function recordCashReconciliation(
   if (!can(session.role, "payroll.reconcile")) {
     throw new Error("Access denied: only Management / Admin can record cash reconciliations.");
   }
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   const acc = state.accounts.find((a) => a.id === input.accountId && a.businessId === session.businessId);
   if (!acc) throw new Error("Account not found.");
   const bizEntries = state.journalEntries.filter((j) => j.businessId === session.businessId);
@@ -875,11 +848,11 @@ export async function recordCashReconciliation(
     countedBalanceCents: input.countedBalanceCents,
     differenceCents: input.countedBalanceCents - ledgerBalanceCents,
     note: input.note.trim(),
-    recordedBy: session.email,
+    recordedBy: session.userId,
     createdAt: new Date().toISOString(),
   };
   state.reconciliations.unshift(rec);
-  saveStore(state);
+  await saveFinanceStore(session, state);
   return rec;
 }
 
@@ -893,7 +866,7 @@ export async function recordCustomerMilestoneReceipt(
   if (!Number.isInteger(input.receivedAmountCents) || input.receivedAmountCents <= 0) {
     throw new Error("Received amount must be a positive ZAR value.");
   }
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   const ms = state.milestones.find((m) => m.id === input.milestoneId && m.businessId === session.businessId);
   if (!ms) throw new Error("Payment milestone not found.");
   const acc = state.accounts.find((a) => a.id === input.accountId && a.businessId === session.businessId);
@@ -928,16 +901,17 @@ export async function recordCustomerMilestoneReceipt(
         memo: "Contract receipt revenue",
       },
     ],
-    createdBy: session.email,
+    createdBy: session.userId,
   });
 
+  (state.customerReceipts ??= []).push({id:receiptId,businessId:session.businessId,milestoneId:ms.id,jobId:ms.jobId,receiptDate:input.receivedDate,amountCents:input.receivedAmountCents,accountId:acc.id,reference:input.reference,journalEntryId:je.id,recordedBy:session.userId,createdAt:new Date().toISOString()});
   ms.receivedAmountCents += input.receivedAmountCents;
   ms.receivedDate = input.receivedDate;
   ms.accountId = acc.id;
   ms.reference = input.reference.trim() || ms.reference;
   ms.journalEntryId = je.id;
   ms.status = ms.receivedAmountCents >= ms.expectedAmountCents ? "received" : "partial";
-  saveStore(state);
+  await saveFinanceStore(session, state);
   return ms;
 }
 
@@ -960,7 +934,7 @@ export async function recordLoanEvent(
   if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) {
     throw new Error("Loan event amount must be a positive ZAR value.");
   }
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   const loan = state.loans.find((l) => l.id === input.loanId && l.businessId === session.businessId);
   if (!loan) throw new Error("Loan account not found.");
   const acc = state.accounts.find((a) => a.id === input.accountId && a.businessId === session.businessId);
@@ -997,7 +971,7 @@ export async function recordLoanEvent(
     description: `${input.eventType === "advance" ? "Loan advance" : "Loan repayment"} — ${loan.lenderName}`,
     evidenceStatus: "verified",
     lines,
-    createdBy: session.email,
+    createdBy: session.userId,
   });
 
   const ev: LoanEvent = {
@@ -1014,11 +988,11 @@ export async function recordLoanEvent(
     note: input.note.trim(),
     evidenceStatus: "verified",
     journalEntryId: je.id,
-    recordedBy: session.email,
+    recordedBy: session.userId,
     createdAt: new Date().toISOString(),
   };
   state.loanEvents.unshift(ev);
-  saveStore(state);
+  await saveFinanceStore(session, state);
   return ev;
 }
 
@@ -1032,7 +1006,7 @@ export async function recordRestrictedGrantReceipt(
   if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) {
     throw new Error("Grant amount must be a positive ZAR value.");
   }
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   const restrictedAcc = findAccountByType(state, session.businessId, "restricted_funding");
   const grantIncAcc = findAccountByType(state, session.businessId, "restricted_grant_income");
   const je = appendBalancedJournalEntry(state, {
@@ -1048,9 +1022,9 @@ export async function recordRestrictedGrantReceipt(
       { id: newId(), accountId: restrictedAcc.id, accountType: restrictedAcc.accountType, debitCents: input.amountCents, creditCents: 0, memo: "Restricted grant inflow" },
       { id: newId(), accountId: grantIncAcc.id, accountType: grantIncAcc.accountType, debitCents: 0, creditCents: input.amountCents, memo: "Restricted grant funding" },
     ],
-    createdBy: session.email,
+    createdBy: session.userId,
   });
-  saveStore(state);
+  await saveFinanceStore(session, state);
   return je;
 }
 
@@ -1062,9 +1036,48 @@ export async function setLoanOpeningVerified(
   if (!can(session.role, "loans.edit")) {
     throw new Error("Access denied: only Management / Admin can verify loan principal.");
   }
-  const state = loadStore();
+  const state = await loadFinanceStore(session);
   const loan = state.loans.find((l) => l.id === loanId && l.businessId === session.businessId);
   if (!loan) throw new Error("Loan account not found.");
   loan.openingPrincipalVerified = verified;
-  saveStore(state);
+  await saveFinanceStore(session, state);
+}
+export async function setupFinanceAccounts(session: AuthSession): Promise<void> {
+ if (session.role !== 'admin') throw new Error('Only Admin can configure accounts.');
+ if (session.mode !== 'supabase') return;
+ const {supabase} = await import('@/lib/supabase');
+ if (!supabase) throw new Error('Connection unavailable.');
+ const {error} = await supabase.rpc('worktrack_setup_accounts', {p_business:session.businessId});
+ if (error) throw new Error(error.message);
+}
+
+export async function createZeroOpeningLoan(session: AuthSession,lenderName:string,terms:string):Promise<LoanAccount>{
+ if(!can(session.role,'loans.edit') || !lenderName.trim())throw new Error('Admin and lender name required.');
+ const state=await loadFinanceStore(session);
+ const loan:LoanAccount={id:newId(),businessId:session.businessId,lenderName:lenderName.trim(),openingPrincipalCents:0,openingPrincipalVerified:true,interestRatePercent:0,securityAssetNote:'',repaymentTermsNote:terms.trim(),createdAt:new Date().toISOString()};
+ state.loans.push(loan);await saveFinanceStore(session,state);return loan;
+}
+export async function createCustomerInvoice(session:AuthSession,input:{jobId:string;label:string;reference:string;expectedDate:string;amountCents:number}):Promise<PaymentMilestone>{
+ if(session.role!=='admin')throw new Error('Only Admin creates customer invoices.');
+ if(!input.jobId || !input.label.trim() || !input.reference.trim() || !Number.isSafeInteger(input.amountCents) || input.amountCents<=0)throw new Error('Job, invoice description, reference and positive amount required.');
+ const state=await loadFinanceStore(session);
+ const invoice:PaymentMilestone={id:newId(),businessId:session.businessId,jobId:input.jobId,label:input.label.trim(),expectedDate:input.expectedDate,expectedAmountCents:input.amountCents,receivedAmountCents:0,receivedDate:null,status:'expected',accountId:null,reference:input.reference.trim(),journalEntryId:null};
+ state.milestones.push(invoice);await saveFinanceStore(session,state);return invoice;
+}
+export async function settleExpense(session:AuthSession,input:{expenseId:string;amountCents:number;accountId:string;paymentDate:string;reference:string}):Promise<ExpenseRecord>{
+ if(!can(session.role,'payroll.record_payment'))throw new Error('Not authorized to pay expenses.');
+ const state=await loadFinanceStore(session),expense=state.expenses.find(e=>e.id===input.expenseId && e.businessId===session.businessId),account=state.accounts.find(a=>a.id===input.accountId && !a.isRestricted && a.isCashAccount);
+ if(!expense || !account || !Number.isSafeInteger(input.amountCents) || input.amountCents<=0 || input.amountCents>expense.amountCents-expense.paidAmountCents)throw new Error('Payment must be positive and no greater than the outstanding expense.');
+ const debit=findAccountByType(state,session.businessId,expense.classification==='capital'?'capital_expenditure':'operating_expenses'),id=newId();
+ const journal=appendBalancedJournalEntry(state,{businessId:session.businessId,entryDate:input.paymentDate,sourceType:'expense_settlement',sourceId:id,jobId:expense.jobId,reference:input.reference,description:`Expense payment: ${expense.description}`,evidenceStatus:'reported',createdBy:session.userId,lines:[{id:newId(),accountId:debit.id,accountType:debit.accountType,debitCents:input.amountCents,creditCents:0,memo:'Expense settled'},{id:newId(),accountId:account.id,accountType:account.accountType,debitCents:0,creditCents:input.amountCents,memo:'Cash paid'}]});
+ (state.expenseSettlements ??= []).push({id,businessId:session.businessId,expenseId:expense.id,paymentDate:input.paymentDate,amountCents:input.amountCents,accountId:account.id,reference:input.reference,journalEntryId:journal.id,recordedBy:session.userId,createdAt:new Date().toISOString()});
+ expense.paidAmountCents+=input.amountCents;expense.paymentStatus=expense.paidAmountCents===expense.amountCents?'paid':'partially_paid';expense.revision=(expense.revision??1)+1;
+ await saveFinanceStore(session,state);return expense;
+}
+export async function saveForecastAssumption(session:AuthSession,input:{jobId:string;weeklyCashCostCents:number;existingArrearsCents:number;receiptDelayWeeks:number;notes:string}):Promise<void>{
+ if(session.role!=='admin' || !input.jobId || !input.notes.trim())throw new Error('Admin, existing job and explicit assumption notes required.');
+ if(!Number.isSafeInteger(input.weeklyCashCostCents) || input.weeklyCashCostCents<0 || !Number.isSafeInteger(input.existingArrearsCents) || input.existingArrearsCents<0)throw new Error('Use nonnegative integer-cent amounts.');
+ const state=await loadFinanceStore(session);const existing=(state.forecastAssumptions??[]).find(a=>a.jobId===input.jobId);
+ if(existing)Object.assign(existing,input,{updatedAt:new Date().toISOString()});else(state.forecastAssumptions??=[]).push({id:newId(),businessId:session.businessId,...input,updatedAt:new Date().toISOString()});
+ await saveFinanceStore(session,state);
 }

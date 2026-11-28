@@ -38,7 +38,7 @@ docker compose logs -f --tail=100 auth rest storage kong db
   set -a && source /srv/worktrack/app/deploy/.env && set +a
   psql "$DATABASE_URL" -c "SELECT business_id, user_id, email, role, active FROM public.memberships;"
   ```
-  Or re-run `deploy/scripts/create-user.sh` / insert the missing `public.memberships` row.
+  Review the existing Auth identity and membership with an authorized Administrator; do not recreate existing accounts.
 
 ### Password reset email link redirects to localhost or fails
 - **Cause:** `SITE_URL` or `ADDITIONAL_REDIRECT_URLS` in self-hosted Supabase `.env` is missing your production domain.
@@ -69,9 +69,11 @@ docker compose logs -f --tail=100 auth rest storage kong db
 - **Cause:** OpenStreetMap tile requests (`https://{s}.tile.openstreetmap.org/...`) are blocked offline or by a corporate firewall.
 - **Note:** GPS waypoint capture and WGS-84 distance calculations continue working offline; map tiles load again when connectivity returns.
 
-### Finance (Increment D) or Vehicles / Weekly Reports (Increment E) data is not shared across devices yet
-- **Cause:** See the **Deployment Readiness Review** in `DEPLOYMENT.md`. As of the current codebase, `increment-d-repository.ts` (writes and most reads) and `increment-e-repository.ts` still use browser `localStorage` rather than live Supabase queries, even though the PostgreSQL tables exist in migrations `0005` and `0006`.
-- **Fix:** Complete the live Supabase repository wiring for Increments D and E before using those modules across multiple devices in production.
+### Finance or operational entries are not shared across devices
+The repositories now have database paths, but real-device verification remains open. Check active membership, applied migrations, the connection status, the sync queue and RLS errors; do not switch production to synthetic mode. See `docs/production-readiness-status.md` before upgrading.
+
+### Business reset or storage cleanup stopped
+Leave application traffic stopped. The reset can leave maintenance enabled and storage partially removed after a failure. Preserve metadata and the verified backup; complete an isolated restore/recovery review before retrying. Do not simply clear maintenance mode and resume writes.
 
 ### Port conflict on startup (`address already in use`)
 - **Fix:** Change `WORKTRACK_BIND_PORT` in `deploy/.env` (e.g. `3081`) and update the upstream port in your reverse proxy config, then re-run `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.

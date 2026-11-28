@@ -67,6 +67,7 @@ export interface InterruptionEntry {
 }
 
 export interface TeamDay {
+  revision?: number;
   id: string;
   businessId: string;
   jobId: string;
@@ -84,6 +85,7 @@ export interface TeamDay {
 }
 
 export interface AttendanceEntry {
+  revision?: number;
   id: string;
   businessId: string;
   jobId: string;

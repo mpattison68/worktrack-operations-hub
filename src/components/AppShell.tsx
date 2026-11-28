@@ -44,7 +44,7 @@ import {
 const PUBLIC_PATHS = new Set(["/auth", "/reset-password"]);
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { session, loading, backendMode, signOut } = useWorkTrackAuth();
+  const { session, loading, backendMode, connectionState, signOut } = useWorkTrackAuth();
   const {
     pendingCount,
     conflictCount,
@@ -107,7 +107,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     { to: "/loans" as const, label: en.nav.loans, icon: Landmark, active: true, visible: can(session.role, "loans.view") },
     { to: "/vehicles" as const, label: en.nav.vehicles, icon: Truck, active: true, visible: true },
     { to: "/reports" as const, label: en.nav.reports, icon: BarChart3, active: true, visible: true },
-    { to: "/settings" as const, label: en.nav.settings, icon: Settings, active: true, visible: can(session.role, "business.view") },
+    { to: "/settings" as const, label: session.role === "supervisor" ? en.account.title : en.nav.settings, icon: Settings, active: true, visible: true },
   ].filter((item) => item.visible);
 
   const mobileNav = [
@@ -213,8 +213,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 {backendMode === "supabase" ? (
                   <>
                     <Database className="h-3.5 w-3.5" />
-                    <span className="hidden sm:inline">{en.app.supabaseMode}</span>
-                    <span className="sm:hidden">Supabase</span>
+                    <span className="hidden sm:inline">{connectionState === "connected" ? en.app.supabaseMode : connectionState === "offline" ? "Server offline" : connectionState === "error" ? "Connection failed" : "Checking connection"}</span>
+                    <span className="sm:hidden">{connectionState === "connected" ? "Connected" : "Not confirmed"}</span>
                   </>
                 ) : (
                   <>

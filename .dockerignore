@@ -23,3 +23,10 @@ BACKUP_AND_RESTORE.md
 UPGRADING.md
 TROUBLESHOOTING.md
 roadmap.md
+**/docker-compose.override.yml
+**/docker-compose.worktrack.yml
+*.dump
+*.gpg
+*.pem
+*.key
+backups

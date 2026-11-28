@@ -223,3 +223,12 @@ export function resetInMemoryOfflineStore(): void {
   memAttachments.clear();
   memMeta.clear();
 }
+export async function getPartitionMeta(businessId: string, userId: string, name: string): Promise<string | null> {
+ const pk=makePartitionKey(businessId,userId), key=`${pk}::${name}`;
+ const rows=hasIndexedDb()?await idbListByPartition<MetaRow>(STORE_META,pk):Array.from(memMeta.values());
+ return rows.find(r=>r.key===key)?.value??null;
+}
+export async function setPartitionMeta(businessId: string,userId: string,name: string,value: string): Promise<void> {
+ const pk=makePartitionKey(businessId,userId); const row={key:`${pk}::${name}`,partitionKey:pk,value};
+ if(hasIndexedDb()) await idbPut(STORE_META,row); else memMeta.set(row.key,row);
+}

@@ -16,6 +16,7 @@ export interface OfflineMutation<TPayload = Record<string, unknown>> {
   id: string;
   clientUuid: string;
   idempotencyKey: string;
+  dataEpoch?: number;
   businessId: string;
   userId: string;
   partitionKey: string;

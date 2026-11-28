@@ -294,4 +294,16 @@ export interface FinanceBundle {
   milestones: PaymentMilestone[];
   loans: LoanAccount[];
   loanEvents: LoanEvent[];
+  customerReceipts?: CustomerReceipt[];
+  expenseSettlements?: ExpenseSettlement[];
+  forecastAssumptions?: ForecastAssumption[];
+}
+export interface CustomerReceipt {
+ id:string;businessId:string;milestoneId:string;jobId:string;receiptDate:string;amountCents:number;accountId:string;reference:string;journalEntryId:string;recordedBy:string;createdAt:string;
+}
+export interface ExpenseSettlement {
+ id:string;businessId:string;expenseId:string;paymentDate:string;amountCents:number;accountId:string;reference:string;journalEntryId:string;recordedBy:string;createdAt:string;
+}
+export interface ForecastAssumption {
+ id:string;businessId:string;jobId:string;weeklyCashCostCents:number;existingArrearsCents:number;receiptDelayWeeks:number;notes:string;updatedAt:string;
 }

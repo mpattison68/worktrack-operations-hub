@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useWorkTrackAuth } from "@/lib/auth-context";
+import { listEvidenceParents,listUploadedEvidence,getPrivateEvidenceUrl } from "@/lib/data/evidence-repository";
+import { listMutations,deleteMutation } from "@/lib/offline/idb-store";
 import { listJobs } from "@/lib/data/repository";
 import { useOfflineSync } from "@/lib/offline/sync-context";
 import { prepareAttachmentFile } from "@/lib/offline/attachment-utils";
@@ -58,6 +60,10 @@ export function PhotosEvidencePanel() {
     }
   }, [jobs, selectedJobId]);
 
+  const parentsQuery=useQuery({queryKey:['evidence-parents',session?.businessId,session?.userId],queryFn:()=>{if(!session)throw new Error('Sign in required');return listEvidenceParents(session);},enabled:Boolean(session)});
+  const uploadedQuery=useQuery({queryKey:['uploaded-evidence',session?.businessId,session?.userId],queryFn:()=>{if(!session)throw new Error('Sign in required');return listUploadedEvidence(session);},enabled:Boolean(session&&effectiveOnline)});
+  const parentOptions=(parentsQuery.data??[]).filter(p=>p.type===entityType);
+  React.useEffect(()=>{if(!parentOptions.some(p=>p.id===selectedJobId))setSelectedJobId(parentOptions[0]?.id??'');},[parentsQuery.data,entityType,selectedJobId]);
   if (!session) return null;
 
   const getConsentedPosition = async (): Promise<{ lat: number; lng: number } | null> => {
@@ -80,14 +86,15 @@ export function PhotosEvidencePanel() {
     try {
       const prepared = await prepareAttachmentFile(file);
       const coords = await getConsentedPosition();
-      const job = jobs.find((j) => j.id === selectedJobId);
+      const parent = parentOptions.find(p=>p.id===selectedJobId);
+      if(!parent)throw new Error("Choose an existing linked record before saving evidence.");
       const label =
         linkedLabel.trim() ||
-        `${entityType.replace(/_/g, " ")} — ${job ? job.name : "General"}`;
+        `${entityType.replace(/_/g, " ")} — ${parent.label}`;
 
       await saveOfflineAttachment(session, {
         linkedEntityType: entityType,
-        linkedEntityId: selectedJobId || "general",
+        linkedEntityId: parent.id,
         linkedLabel: label,
         fileName: prepared.fileName,
         mimeType: prepared.mimeType,
@@ -116,6 +123,8 @@ export function PhotosEvidencePanel() {
   };
 
   const handleRemove = async (id: string) => {
+    const queue=await listMutations(session.businessId,session.userId);
+    for(const mutation of queue)if(mutation.entityType==='attachment'&&mutation.entityId===id)await deleteMutation(mutation.id);
     await deleteAttachment(id);
     await refreshOfflineState();
     toast.success("Removed local attachment.");
@@ -177,15 +186,15 @@ export function PhotosEvidencePanel() {
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="att-job">Linked job</Label>
+              <Label htmlFor="att-job">Linked record</Label>
               <Select value={selectedJobId} onValueChange={setSelectedJobId}>
                 <SelectTrigger id="att-job" className="touch-target">
-                  <SelectValue placeholder="Select job" />
+                  <SelectValue placeholder="Select an existing record" />
                 </SelectTrigger>
                 <SelectContent>
-                  {jobs.map((job) => (
+                  {parentOptions.map((job) => (
                     <SelectItem key={job.id} value={job.id}>
-                      {job.name}
+                      {job.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -232,7 +241,7 @@ export function PhotosEvidencePanel() {
             />
             <Button
               type="button"
-              disabled={capturing}
+              disabled={capturing || !selectedJobId}
               onClick={() => fileInputRef.current?.click()}
               className="touch-target gap-2"
             >
@@ -247,6 +256,7 @@ export function PhotosEvidencePanel() {
         </CardContent>
       </Card>
 
+      {session.mode==='supabase'&&<section className="space-y-3"><h2 className="text-lg font-semibold">Uploaded evidence — shared business records</h2>{uploadedQuery.isError&&<p role="alert" className="text-destructive">Evidence could not be loaded. Check your connection.</p>}{(uploadedQuery.data??[]).map(file=><div className="flex flex-wrap items-center justify-between gap-3 border-b border-border py-3" key={file.id}><div><p className="text-sm font-medium">{file.linked_label}</p><p className="text-xs text-muted-foreground">{file.file_name}</p></div><Button variant="outline" onClick={async()=>{try{const url=await getPrivateEvidenceUrl(file.storage_path);window.open(url,'_blank','noopener,noreferrer');}catch(error){toast.error(error instanceof Error?error.message:'Private file could not be opened.');}}}>Open private file</Button></div>)}</section>}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">

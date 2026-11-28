@@ -24,17 +24,7 @@ export async function computeSha256Hex(bytes: Uint8Array): Promise<string> {
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
   }
-  // Deterministic fallback hash for non-WebCrypto test runtimes
-  let h1 = 0xdeadbeef;
-  let h2 = 0x41c6ce57;
-  for (let i = 0; i < bytes.length; i += 1) {
-    const ch = bytes[i] ?? 0;
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  const hex1 = (h1 >>> 0).toString(16).padStart(8, "0");
-  const hex2 = (h2 >>> 0).toString(16).padStart(8, "0");
-  return `${hex1}${hex2}`.repeat(4);
+  throw new Error("A secure HTTPS connection with SHA-256 support is required.");
 }
 
 export function dataUrlToBytes(dataUrl: string): Uint8Array {
@@ -107,7 +97,7 @@ export async function prepareAttachmentFile(file: File): Promise<PreparedAttachm
     };
   }
 
-  const compressedDataUrl = await new Promise<string>((resolve) => {
+  const compressedDataUrl = await new Promise<string>((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
       const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(img.width || 1, img.height || 1));
@@ -118,13 +108,13 @@ export async function prepareAttachmentFile(file: File): Promise<PreparedAttachm
       canvas.height = height;
       const ctx = canvas.getContext("2d");
       if (!ctx) {
-        resolve(rawDataUrl);
+        reject(new Error("Photo compression unavailable. No photo was saved."));
         return;
       }
       ctx.drawImage(img, 0, 0, width, height);
       resolve(canvas.toDataURL("image/jpeg", IMAGE_QUALITY));
     };
-    img.onerror = () => resolve(rawDataUrl);
+    img.onerror = () => reject(new Error("This file could not be decoded as a photograph."));
     img.src = rawDataUrl;
   });
 

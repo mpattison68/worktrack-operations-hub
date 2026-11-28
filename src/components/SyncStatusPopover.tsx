@@ -7,6 +7,7 @@ import {
   RefreshCw,
   Smartphone,
 } from "lucide-react";
+import { useWorkTrackAuth } from "@/lib/auth-context";
 import { useOfflineSync } from "@/lib/offline/sync-context";
 import type { ConflictRecord } from "@/lib/offline/types";
 import { ConflictResolutionDialog } from "@/components/ConflictResolutionDialog";
@@ -17,6 +18,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 
 export function SyncStatusPopover() {
+  const {session,connectionState}=useWorkTrackAuth();
   const {
     mutations,
     conflicts,
@@ -59,7 +61,7 @@ export function SyncStatusPopover() {
                 ? `${conflictCount} conflict${conflictCount === 1 ? "" : "s"}`
                 : pendingCount > 0
                   ? `${pendingCount} saved on phone`
-                  : "All synced"}
+                  : session?.mode === "synthetic_dev" ? "Dev queue empty" : connectionState !== "connected" ? "Server not confirmed" : lastSyncAt ? "All synced" : "Not checked"}
             </span>
             {totalAttention > 0 && (
               <Badge variant="secondary" className="h-4 px-1 text-[10px] sm:hidden">

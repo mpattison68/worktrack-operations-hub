@@ -6,9 +6,13 @@ Production runs independently on a customer-owned Linux VM using Docker Compose 
 
 ## Architecture Summary
 - **Frontend & SSR shell**: React 19, TanStack Start v1 / TanStack Router, Tailwind CSS v4, Vite, Leaflet (OpenStreetMap tiles), Recharts, and Workbox (`vite-plugin-pwa`).
-- **Backend & Data**: Self-hosted Supabase (PostgreSQL with Row Level Security, GoTrue Auth, PostgREST, private Supabase Storage bucket `worktrack-evidence`, Kong API Gateway).
-- **Development mode**: When `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are unset, the app runs in a clearly badged synthetic browser-storage mode (`Synthetic dev mode`) for UI testing without a database.
+- **Backend & Data**: Self-hosted Supabase (PostgreSQL with Row Level Security, GoTrue Auth, PostgREST, private Supabase Storage bucket `worktrack-evidence`, the existing Envoy API gateway).
+- **Development mode**: Only in development, when `VITE_SUPABASE_URL` and the public key are unset, the app runs in a clearly badged synthetic browser-storage mode (`Synthetic dev mode`) for UI testing without a database.
 - **Authoritative specification**: [`docs/specification.md`](docs/specification.md)
+
+## Production release gate
+
+**Not cleared for live deployment.** Read [`docs/production-readiness-status.md`](docs/production-readiness-status.md) for tested changes and outstanding validation. The existing VM, business, accounts and local overrides were not changed.
 
 ## Documentation
 - [`DEPLOYMENT.md`](DEPLOYMENT.md) — Deployment architecture, deployment readiness review, VM sizing, and 16-step self-hosted VM installation guide
@@ -25,11 +29,11 @@ Requires Node.js 22+ (or Bun).
 ```bash
 git clone <your-private-github-repo-url>
 cd worktrack
-npm install
-npm run dev
+bun install --frozen-lockfile
+bun run dev
 ```
 
 Run the automated test suite:
 ```bash
-npm test
+bunx vitest run
 ```

@@ -37,3 +37,11 @@ use the editor.
 - **Tenant & role boundary.** Enforce `business_id` isolation and `admin` / `owner` / `supervisor` permissions in both PostgreSQL RLS policies (`supabase/migrations/`) and client/server guards (`src/lib/permissions.ts`).
 - **Portable SQL migrations.** Keep customer-owned SQL migrations in `db/migrations/` and synthetic dev seeds in `db/seed/` so they remain independent of Lovable Cloud and run cleanly via `deploy/scripts/migrate.sh` on self-hosted Supabase.
 - **Translation-ready strings.** Keep user-facing UI strings in `src/i18n/en.ts` so isiXhosa (`xh`) can be added without refactoring components.
+
+## Production hardening
+- Use a stable, RLS-filtered bundle read and compare-and-swap database transactions for D/E repositories, because cross-device financial reads and writes must not rely on browser snapshots.
+- Stamp partitioned offline mutations with the server business epoch and reject obsolete epochs, because an administrative reset must not resurrect old field data.
+- Reserve evidence metadata before private upload and finalize afterward, because parent authorization and uploaded-file visibility must agree.
+- Account administration uses authenticated portable server functions with the service key loaded only server-side, because browser role assertions cannot authorize Auth administration.
+- Use pinned Bun and its frozen lockfile for the Node-targeted Docker build, because the VM build must reproduce the tested dependency graph.
+- Reset only explicitly allowlisted application tables, because unrelated public tables must survive customer-business cleanup.

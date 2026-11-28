@@ -13,8 +13,9 @@ ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
 ENV NITRO_PRESET=node-server
 ENV NODE_OPTIONS=--max-old-space-size=2048
 
-COPY package.json bun.lock* ./
-RUN npm install --no-audit --no-fund
+ARG BUN_VERSION=1.4.4
+COPY package.json bun.lock bunfig.toml ./
+RUN npm install -g bun@${BUN_VERSION} && bun install --frozen-lockfile
 COPY . .
 RUN npm run build
 # Ensure VitePWA service worker artifacts are present in Nitro's public output dir

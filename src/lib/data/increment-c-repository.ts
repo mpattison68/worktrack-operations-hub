@@ -62,23 +62,7 @@ export function getDefaultScopeForJob(jobId: string): RoadSectionInput[] {
       },
     ];
   }
-  return [
-    {
-      id: `sec-default-${jobId}`,
-      label: "Section 1 (0m – 10 000m)",
-      startChainageMeters: 0,
-      endChainageMeters: 10000,
-      carriageway: "single",
-      strips: [
-        { id: "st-l", side: "left", widthMeters: 5, lengthOverrideMeters: null },
-        { id: "st-r", side: "right", widthMeters: 5, lengthOverrideMeters: null },
-      ],
-      difficulty: "similar",
-      difficultyReasons: [],
-      activities: ["cutting", "waste_collection"],
-      notes: "Default scope until linked assessment baseline is approved.",
-    },
-  ];
+  return [];
 }
 
 function createInitialIncrementCStore(): SyntheticIncrementCStore {
@@ -614,6 +598,7 @@ export async function listAttendanceForWeek(
 
     const mapAtt = (r: Record<string, unknown>): AttendanceEntry => ({
       id: String(r["id"]),
+      revision:Number(r["revision"]??1),
       businessId: String(r["business_id"]),
       jobId: String(r["job_id"]),
       workerId: String(r["worker_id"]),
@@ -633,6 +618,7 @@ export async function listAttendanceForWeek(
     return {
       teamDays: (tRes.data ?? []).map((r) => ({
         id: r.id,
+        revision:Number(r.revision??1),
         businessId: r.business_id,
         jobId: r.job_id,
         workDate: r.work_date,
