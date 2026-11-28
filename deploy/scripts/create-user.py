@@ -26,8 +26,8 @@ def main():
   # stdin SQL supports safe psql variable substitution; no -c substitution.
   matches=sql(f'SELECT id FROM businesses WHERE name={lit(a.business_name)} ORDER BY id;').splitlines()
   if len(matches)>1:raise RuntimeError('Multiple businesses with this name; provide explicit --business-id.')
-  bid=matches[0] if matches else sql(f"BEGIN; SELECT pg_advisory_xact_lock(hashtextextended({lit(a.business_name)},9)); INSERT INTO businesses(name) SELECT {lit(a.business_name)} WHERE NOT EXISTS(SELECT 1 FROM businesses WHERE name={lit(a.business_name)}); SELECT id FROM businesses WHERE name={lit(a.business_name)}; COMMIT;").splitlines()[-1]
- existing=sql(f"SELECT u.id FROM auth.users u JOIN memberships m ON m.user_id=u.id WHERE lower(u.email)=lower({lit(a.email)}) AND m.business_id='{bid}';")
+  bid=matches[0] if matches else ''
+ existing=sql(f"SELECT u.id FROM auth.users u JOIN memberships m ON m.user_id=u.id WHERE lower(u.email)=lower({lit(a.email)}) AND m.business_id='{bid}';") if bid else ''
  if existing and not a.recover_password:
   print('Existing business account preserved; no duplicate user created. Use WorkTrack Settings to maintain access, or --recover-password explicitly.');return
  password=getpass.getpass('New temporary password (at least 12 characters): ')
@@ -37,8 +37,11 @@ def main():
   if not existing:raise RuntimeError('Recovery requires existing membership in this business.')
   auth('PUT','admin/users/'+existing,{'password':password});print('Password recovered. Share securely; user should change it on sign-in.');return
  created=auth('POST','admin/users',{'email':a.email,'password':password,'email_confirm':True,'user_metadata':{'full_name':a.name}});uid=str(uuid.UUID(created['id']));password=''
+ # A missing business is created only inside the membership transaction.
+ if not bid:bid=str(uuid.uuid4())
  try:
-  sql(f"BEGIN; INSERT INTO profiles(id,email,full_name) VALUES('{uid}',{lit(a.email)},{lit(a.name)}) ON CONFLICT(id) DO NOTHING; INSERT INTO memberships(business_id,user_id,email,full_name,role,active) VALUES('{bid}','{uid}',{lit(a.email)},{lit(a.name)},{lit(a.role)}::public.app_role,true); COMMIT;")
+  create_business=f"INSERT INTO businesses(id,name) VALUES('{bid}',{lit(a.business_name)});" if a.business_name and not matches else ''
+  sql(f"BEGIN; {create_business} INSERT INTO profiles(id,email,full_name) VALUES('{uid}',{lit(a.email)},{lit(a.name)}) ON CONFLICT(id) DO NOTHING; INSERT INTO memberships(business_id,user_id,email,full_name,role,active) VALUES('{bid}','{uid}',{lit(a.email)},{lit(a.name)},{lit(a.role)}::public.app_role,true); COMMIT;")
  except Exception:
   try:auth('DELETE','admin/users/'+uid)
   except Exception:raise RuntimeError('Membership failed and NEW account cleanup failed. Existing business/accounts were not changed; review on VM.')

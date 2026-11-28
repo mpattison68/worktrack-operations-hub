@@ -45,3 +45,8 @@ use the editor.
 - Account administration uses authenticated portable server functions with the service key loaded only server-side, because browser role assertions cannot authorize Auth administration.
 - Use pinned Bun and its frozen lockfile for the Node-targeted Docker build, because the VM build must reproduce the tested dependency graph.
 - Reset only explicitly allowlisted application tables, because unrelated public tables must survive customer-business cleanup.
+
+- Preserve raw financial tables for management and provide assigned-job operational projections to Supervisors, because UI-only financial redaction is not an access boundary.
+- Keep payroll header, earnings, adjustments and approval in one source-validated database transaction, because separate requests can leave partial or stale payroll.
+- Reset SQL before resumable Storage cleanup and retain maintenance until cleanup verification succeeds, because the services cannot share a transaction.
+- Bootstrap legacy migration history only with explicit independently verified 0001–0008 confirmation, because an existing manually installed schema must never be replayed.

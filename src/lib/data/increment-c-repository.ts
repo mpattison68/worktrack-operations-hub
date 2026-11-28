@@ -1,3 +1,4 @@
+import {encodeRow} from "@/lib/data/database-store";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { SYNTHETIC_BIZ_A, SYNTHETIC_JOB_1 } from "@/lib/data/synthetic-fixtures";
 import type { AuthSession } from "@/lib/domain/types";
@@ -1080,6 +1081,13 @@ export async function savePayrollRunDraftOrApprove(
     throw new Error("Only Management / Admin can approve a payroll week.");
   }
 
+  let sourceToken='';let dataEpoch=1;
+  if(session.mode==='supabase'){
+    if(!supabase)throw new Error('Connection unavailable.');
+    const source=await supabase.rpc('worktrack_payroll_source_token',{p_business:session.businessId,p_job:input.jobId,p_week:input.weekStartDate});
+    if(source.error)throw new Error(source.error.message);sourceToken=source.data;
+    const epoch=await supabase.from('businesses').select('data_epoch').eq('id',session.businessId).single();if(epoch.error)throw new Error(epoch.error.message);dataEpoch=Number(epoch.data.data_epoch);
+  }
   const [bundle, att, existingRuns] = await Promise.all([
     listWorkforceBundle(session),
     listAttendanceForWeek(session, input.jobId, input.weekStartDate),
@@ -1152,74 +1160,14 @@ export async function savePayrollRunDraftOrApprove(
   };
 
   if (isSupabaseConfigured && supabase && session.mode === "supabase") {
-    const { error: runErr } = await supabase.from("payroll_runs").insert({
-      id: newRun.id,
-      business_id: newRun.businessId,
-      job_id: newRun.jobId,
-      week_start_date: newRun.weekStartDate,
-      week_end_date: newRun.weekEndDate,
-      revision: newRun.revision,
-      status: "draft",
-      gross_total_cents: newRun.grossTotalCents,
-      adjustments_total_cents: newRun.adjustmentsTotalCents,
-      deductions_total_cents: newRun.deductionsTotalCents,
-      net_total_cents: newRun.netTotalCents,
-      correction_reason: newRun.correctionReason,
-      supersedes_run_id: newRun.supersedesRunId,
-      created_by_email: newRun.createdByEmail,
+    const {data,error}=await supabase.rpc('worktrack_save_payroll',{
+      p_business:session.businessId,p_epoch:dataEpoch,p_source_token:sourceToken,p_expected_revision:nextRevision-1,p_approve:input.approve,
+      p_run:encodeRow(newRun as unknown as Record<string,unknown>,{key:'',table:''}),
+      p_earnings:newRun.earnings.map(e=>encodeRow(e as unknown as Record<string,unknown>,{key:'',table:''})),
+      p_adjustments:mappedAdjustments.map(a=>encodeRow(a as unknown as Record<string,unknown>,{key:'',table:''})),
     });
-    if (runErr) throw new Error(runErr.message);
-
-    if (newRun.earnings.length > 0) {
-      const { error: earnErr } = await supabase.from("payroll_earnings").insert(
-        newRun.earnings.map((e) => ({
-          business_id: newRun.businessId,
-          payroll_run_id: newRun.id,
-          worker_id: e.workerId,
-          days_worked: e.daysWorked,
-          normal_hours: e.normalHours,
-          weekday_ot_hours: e.weekdayOtHours,
-          saturday_hours: e.saturdayHours,
-          sunday_hours: e.sundayHours,
-          public_holiday_hours: e.publicHolidayHours,
-          normal_pay_cents: e.normalPayCents,
-          weekday_ot_pay_cents: e.weekdayOtPayCents,
-          saturday_pay_cents: e.saturdayPayCents,
-          sunday_pay_cents: e.sundayPayCents,
-          public_holiday_pay_cents: e.publicHolidayPayCents,
-          gross_pay_cents: e.grossPayCents,
-          adjustments_cents: e.adjustmentsCents,
-          deductions_cents: e.deductionsCents,
-          net_pay_cents: e.netPayCents,
-          rule_snapshots: e.ruleSnapshots,
-        })),
-      );
-      if (earnErr) throw new Error(earnErr.message);
-    }
-
-    if (mappedAdjustments.length > 0) {
-      const { error: adjErr } = await supabase.from("payroll_adjustments").insert(
-        mappedAdjustments.map((a) => ({
-          id: a.id,
-          business_id: a.businessId,
-          payroll_run_id: a.payrollRunId,
-          worker_id: a.workerId,
-          kind: a.kind,
-          description: a.description,
-          amount_cents: a.amountCents,
-          approved_by_email: a.approvedByEmail,
-        })),
-      );
-      if (adjErr) throw new Error(adjErr.message);
-    }
-
-    if (input.approve) {
-      const { error: rpcErr } = await supabase.rpc("approve_payroll_run", {
-        _run_id: newRun.id,
-        _actor_email: session.email,
-      });
-      if (rpcErr) throw new Error(rpcErr.message);
-    }
+    if(error)throw new Error(error.message);
+    newRun.status=data.status;newRun.approvedAt=data.approved_at;newRun.approvedByEmail=data.approved_by_email;
     return newRun;
   }
 

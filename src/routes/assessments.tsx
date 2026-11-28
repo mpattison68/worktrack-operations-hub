@@ -63,7 +63,7 @@ function AssessmentsPage() {
 
   // Automatically synchronise any queued offline waypoints when connectivity returns
   React.useEffect(() => {
-    if (!session || typeof window === "undefined") return;
+    if (!session || session.mode==='supabase' || typeof window === "undefined") return;
     const runSync = async () => {
       if (!navigator.onLine) return;
       const queued = getOfflineWaypoints();

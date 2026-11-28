@@ -10,7 +10,7 @@ const snake = (s: string) => s.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`);
 const camel = (s: string) => s.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
 export function decodeRow(row: Row, mapping: TableMapping): Row {
   for(const [key,value] of Object.entries(row))if(key.endsWith('_cents')&&value!==null&&!Number.isSafeInteger(Number(value)))throw new Error('A monetary value exceeds the supported exact integer-cent range.');
-  return Object.fromEntries(Object.entries(row).map(([k, v]) => [Object.entries(mapping.rename ?? {}).find(([, value]) => value === k)?.[0] ?? camel(k), k.endsWith('_cents') && v !== null ? Number(v) : v]));
+  return Object.fromEntries(Object.entries(row).map(([k, v]) => [Object.entries(mapping.rename ?? {}).find(([, value]) => value === k)?.[0] ?? camel(k), k.endsWith('_cents') && v !== null ? Number(v) : (v!==null && typeof v==='object' ? structuredClone(v) : v)]));
 }
 export function encodeRow(row: Row, mapping: TableMapping): Row {
   return Object.fromEntries(Object.entries(row).filter(([k]) => k !== mapping.children?.key).map(([k,v]) => [mapping.rename?.[k] ?? snake(k), v]));
@@ -23,6 +23,7 @@ export async function readDatabaseStore(session: AuthSession, mappings: TableMap
   const {data:bundle,error}=await supabase.rpc('worktrack_read_bundle',{p_business:session.businessId,p_tables:tables});
   if(error)throw new Error(error.message);
   const rows=bundle.tables as Record<string,Row[]>;
+  if(session.role==='supervisor' && tables.includes('weekly_reports')){const result=await supabase.rpc('worktrack_operational_read',{p_business:session.businessId,p_table:'weekly_reports'});if(result.error)throw new Error(result.error.message);rows['weekly_reports']=result.data;}
   const state: DatabaseStore = {}; const baseline = new Map<string, Row>();
   await Promise.all(mappings.map(async mapping => {
     const res = {data:rows[mapping.table] ?? []};

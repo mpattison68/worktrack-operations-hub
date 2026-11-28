@@ -1,3 +1,4 @@
+import type {ApiRow} from "@/lib/data/api-row";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 import {
   createInitialSyntheticState,
@@ -287,13 +288,13 @@ export async function createInvitation(
 
 export async function listJobs(session: AuthSession): Promise<Job[]> {
   if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase
+    const { data, error } = session.role==='supervisor' ? await supabase.rpc('worktrack_operational_read',{p_business:session.businessId,p_table:'jobs'}) : await supabase
       .from("jobs")
       .select("*")
       .eq("business_id", session.businessId)
       .order("created_at", { ascending: false });
     if (error) throw new Error(error.message);
-    const mapped: Job[] = (data ?? []).map((j) => ({
+    const mapped: Job[] = ((data ?? []) as ApiRow<Job>[]).map((j) => ({
       id: j.id,
       businessId: j.business_id,
       name: j.name,
@@ -461,7 +462,7 @@ export async function listWorkforceBundle(session: AuthSession): Promise<{
   if (isSupabaseConfigured && supabase) {
     const [rolesRes, workersRes, assignRes, rulesRes, overridesRes] = await Promise.all([
       supabase.from("worker_roles").select("*").eq("business_id", session.businessId),
-      supabase.from("workers").select("*").eq("business_id", session.businessId),
+      session.role==='supervisor' ? supabase.rpc('worktrack_operational_read',{p_business:session.businessId,p_table:'workers'}) : supabase.from("workers").select("*").eq("business_id", session.businessId),
       supabase.from("worker_assignments").select("*").eq("business_id", session.businessId),
       canViewRates
         ? supabase
@@ -525,7 +526,7 @@ export async function listWorkforceBundle(session: AuthSession): Promise<{
         notes: p.notes ?? "",
         createdAt: p.created_at,
       })),
-      workers: (workersRes.data ?? [])
+      workers: ((workersRes.data ?? []) as ApiRow<Worker>[])
         .map((w) => ({
           id: w.id,
           businessId: w.business_id,

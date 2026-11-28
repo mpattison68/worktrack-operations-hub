@@ -146,7 +146,7 @@ export function AssessmentWizard({ initial, onSave, onSyncOffline, onCancel }: A
       : true;
 
   React.useEffect(() => {
-    if (!initial?.id) return;
+    if (!initial?.id || session?.mode==='supabase') return;
     setOfflinePendingCount(getOfflineWaypoints(initial.id).length);
   }, [initial?.id, routePoints.length]);
 
@@ -168,7 +168,7 @@ export function AssessmentWizard({ initial, onSave, onSyncOffline, onCancel }: A
       setDistanceSource("gps_route");
       setDistanceKm((nextMetrics.totalDistanceMeters / 1000).toFixed(4));
     }
-    if (capturedOfflinePoint && initial?.id && session) {
+    if (capturedOfflinePoint && initial?.id && session && session.mode!=="supabase") {
       enqueueOfflineWaypoint(initial.id, session.businessId, capturedOfflinePoint);
       setOfflinePendingCount(getOfflineWaypoints(initial.id).length);
     }

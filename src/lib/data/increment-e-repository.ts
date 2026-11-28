@@ -777,7 +777,7 @@ export async function syncNotifications(
   store.notifications = [...store.notifications.filter(n => n.businessId === session.businessId), ...otherBiz];
   for (const alert of evaluated) if (!store.notifications.some(n => n.businessId === session.businessId && n.dedupKey === alert.dedupKey)) store.notifications.push({...alert, id: crypto.randomUUID()});
   await saveEStore(session, store);
-  return evaluated;
+  return evaluated.map(alert=>store.notifications.find(n=>n.businessId===session.businessId&&n.dedupKey===alert.dedupKey)??alert);
 }
 
 export async function markNotificationReadOrAck(

@@ -5,7 +5,7 @@ BUSINESS='d7afd88f-4a5e-4dcd-8af9-c58e835f561e'
 ROAD=['Mabhuti','Siyabulela','Simamkele','Luzuko','Luthando','Athenkosi','Akhona','Zukhanye','Nandipha','Xolani','Malibongwe']
 WORKERS=[('andile','Andile','supervisor')]+[(name.lower(),name,'road_worker') for name in ROAD]+[('cook','Cook - name to be confirmed','cook')]
 PRESERVE={'businesses','memberships','profiles','invitations','audit_events','worker_roles','pay_rules','notification_preferences','admin_operation_log','accounts'}
-RESET_TABLES={'assessment_route_points','assessment_revisions','assessments','benchmarks','jobs','workers','worker_assignments','rate_override_requests','progress_entries','interruptions','team_days','attendance_entries','payroll_runs','payroll_run_lines','payroll_adjustments','journal_entries','journal_lines','wage_payments','wage_allocations','expenses','expense_requests','transfers','reconciliations','payment_milestones','customer_receipts','expense_settlements','forecast_assumptions','loans','loan_events','assets','asset_private','asset_checks','defects','asset_services','weekly_reports','notifications','notification_receipts','evidence_attachments','sync_idempotency_keys'}
+RESET_TABLES={'assessment_route_points','job_revisions','mutation_receipts','assessments','benchmarks','jobs','workers','worker_assignments','worker_rate_overrides','progress_entries','interruptions','team_days','attendance_entries','payroll_runs','payroll_earnings','payroll_adjustments','journal_entries','journal_lines','wage_payments','wage_allocations','expenses','expense_requests','transfers','reconciliations','payment_milestones','customer_receipts','expense_settlements','forecast_assumptions','loans','loan_events','assets','asset_private','asset_checks','defects','asset_services','weekly_reports','notifications','notification_receipts','evidence_attachments','sync_idempotency_keys','funding_receipts'}
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 def sql_literal(value): return "'"+str(value).replace("'","''")+"'"
 def query(sql):
@@ -27,7 +27,9 @@ def verify_backup(directory):
  m=json.loads(manifest.read_text())
  created=datetime.datetime.fromisoformat(m['created_at'])
  if (datetime.datetime.now(datetime.timezone.utc)-created).total_seconds()>86400: raise RuntimeError('Backup is older than 24 hours.')
+ if not m.get('quiesced'): raise RuntimeError('Reset/import requires a backup made with all writers stopped.')
  for name,digest in m['files'].items():
+  if pathlib.Path(name).name!=name: raise RuntimeError('Unsafe backup manifest filename.')
   if hashlib.sha256((p/name).read_bytes()).hexdigest()!=digest: raise RuntimeError('Backup checksum mismatch: '+name)
  if not all(k in m['files'] for k in ['database.dump','storage.tar.gz','configuration.tar.gz']): raise RuntimeError('Backup must include database, storage and configuration.')
  if m.get('database_fingerprint')!=query("SELECT md5(current_database()||':'||(SELECT system_identifier::text FROM pg_control_system()))"):
@@ -36,51 +38,59 @@ def verify_backup(directory):
 
 def tenant_tables():
  return [r['table_name'] for r in rows("SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND column_name='business_id' ORDER BY table_name") if r['table_name'] in RESET_TABLES and r['table_name'] not in PRESERVE]
-def reset(args):
+def reset_plan():
  tables=tenant_tables(); counts={t:int(query(f'SELECT count(*) FROM public."{t}" WHERE business_id=\'{BUSINESS}\';')) for t in tables}
- print('Target: existing Vuyo Contracting only. Dry run' if not args.execute else 'Target: existing Vuyo Contracting only. EXECUTION REQUESTED')
- print(json.dumps(counts,indent=2))
- print('Preserved: Auth accounts, memberships, business/settings, roles/pay rules, notification preferences, audit history and schema/migration history.')
- approved=rows(f"SELECT 'payroll' kind,count(*) count FROM public.payroll_runs WHERE business_id='{BUSINESS}' AND status='approved' UNION ALL SELECT 'reports',count(*) FROM public.weekly_reports WHERE business_id='{BUSINESS}' AND status='approved' UNION ALL SELECT 'journals',count(*) FROM public.journal_entries WHERE business_id='{BUSINESS}'")
- print('Historical/approved records requiring review:',json.dumps(approved))
- # Build actual FK graph and refuse dependencies from preserved/outside tables.
- edges=rows("SELECT child.relname child,parent.relname parent,ns.nspname child_schema,pg_get_constraintdef(c.oid) definition FROM pg_constraint c JOIN pg_class child ON child.oid=c.conrelid JOIN pg_namespace ns ON ns.oid=child.relnamespace JOIN pg_class parent ON parent.oid=c.confrelid JOIN pg_namespace pn ON pn.oid=parent.relnamespace WHERE c.contype='f' AND pn.nspname='public'")
+ edges=rows("SELECT child.relname child,parent.relname parent,ns.nspname child_schema FROM pg_constraint c JOIN pg_class child ON child.oid=c.conrelid JOIN pg_namespace ns ON ns.oid=child.relnamespace JOIN pg_class parent ON parent.oid=c.confrelid JOIN pg_namespace pn ON pn.oid=parent.relnamespace WHERE c.contype='f' AND pn.nspname='public'")
  for e in edges:
-  if e['parent'] in tables and (e['child'] not in tables or e['child_schema']!='public'):
-   if e['child']=='assets' and e['parent']=='jobs': continue
-   raise RuntimeError('Unexpected preserved/external dependency: '+str(e))
- # Self references are cleared explicitly inside the same transaction.
- order=[]; pending=set(tables)
+  if e['parent'] in tables and (e['child'] not in tables or e['child_schema']!='public'): raise RuntimeError('Unexpected preserved/external dependency; no deletion: '+str(e))
+ order=[];pending=set(tables)
  while pending:
   ready=sorted(t for t in pending if not any(e['parent']==t and e['child'] in pending and e['child']!=t for e in edges))
-  if not ready: raise RuntimeError('Cyclic dependencies require manual review: '+str(sorted(pending)))
-  order.extend(ready); pending.difference_update(ready)
- print('Deletion order:',', '.join(order))
- evidence=rows(f"SELECT storage_path FROM public.evidence_attachments WHERE business_id='{BUSINESS}'")
- if not args.execute: return
- if args.confirm != 'RESET VUYO CONTRACTING' or not args.allow_test_history: raise RuntimeError('Execution requires --confirm "RESET VUYO CONTRACTING" and --allow-test-history after reviewing dry-run.')
- backup=verify_backup(args.backup)
- if args.maintenance_confirm!='ALL DEVICES STOPPED': raise RuntimeError('Stop application/write traffic and confirm --maintenance-confirm "ALL DEVICES STOPPED".')
- query(f"UPDATE public.businesses SET maintenance_mode=true WHERE id='{BUSINESS}';")
- # Storage is a separate service: remove objects first while write traffic is stopped.
- # If any cleanup fails, retain DB metadata and report incomplete cleanup; backup
- # contains the original files for recovery. Never delete storage.objects by SQL.
- url=os.environ.get('SUPABASE_URL') or os.environ.get('VITE_SUPABASE_URL'); key=os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
- if not url or not key: raise RuntimeError('Storage API configuration required.')
- for start in range(0,len(evidence),100):
-  paths=[x['storage_path'] for x in evidence[start:start+100]]
+  if not ready:raise RuntimeError('Cyclic dependency requires manual review.')
+  order+=ready;pending.difference_update(ready)
+ return counts,order
+
+def finish_storage(args,backup):
+ plan_path=backup/'reset-plan.json';plan=json.loads(plan_path.read_text())
+ if plan.get('business')!=BUSINESS or not plan.get('database_committed'):raise RuntimeError('No committed reset cleanup plan.')
+ if not rows(f"SELECT id FROM businesses WHERE id='{BUSINESS}' AND maintenance_mode"):raise RuntimeError('Maintenance must remain enabled during cleanup.')
+ url=os.environ.get('SUPABASE_URL') or os.environ.get('VITE_SUPABASE_URL');key=os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+ if not url or not key:raise RuntimeError('Storage API configuration required; reset remains in maintenance.')
+ existing={r['name'] for r in rows(f"SELECT name FROM storage.objects WHERE bucket_id='worktrack-evidence' AND name LIKE '{BUSINESS}/%'")}
+ for start in range(0,len(plan['paths']),100):
+  paths=[p for p in plan['paths'][start:start+100] if p in existing]
+  if not paths:continue
   req=urllib.request.Request(url.rstrip('/')+'/storage/v1/object/worktrack-evidence',data=json.dumps({'prefixes':paths}).encode(),method='DELETE',headers={'apikey':key,'Authorization':'Bearer '+key,'Content-Type':'application/json'})
   try:
-   with urllib.request.urlopen(req,timeout=60) as response: response.read()
-  except Exception: raise RuntimeError('Storage deletion failed. Database retained; stop and restore evidence from the verified backup before retrying.')
- stmts=['BEGIN;',f"SELECT pg_advisory_xact_lock(hashtextextended('{BUSINESS}',0));",f"UPDATE public.memberships SET assigned_job_ids='{{}}' WHERE business_id='{BUSINESS}';",f"UPDATE public.invitations SET assigned_job_ids='{{}}' WHERE business_id='{BUSINESS}';"]
- # Do not bypass financial immutability triggers as a normal user. This procedure
- # uses VM database-owner credentials, null auth identity, and explicit scope.
- for t in order: stmts.append(f'DELETE FROM public."{t}" WHERE business_id=\'{BUSINESS}\';')
- stmts.extend([f"UPDATE public.accounts SET opening_balance_cents=0 WHERE business_id='{BUSINESS}';",f"UPDATE public.businesses SET data_epoch=data_epoch+1,maintenance_mode=false WHERE id='{BUSINESS}';",f"INSERT INTO public.audit_events(business_id,actor_user_id,entity_type,entity_id,action,reason,changed_fields) VALUES('{BUSINESS}',{sql_literal(args.actor)}::uuid,'business','{BUSINESS}','administrative_reset','Next contract clean start',jsonb_build_object('counts',{sql_literal(json.dumps(counts))}::jsonb,'backup',{sql_literal(str(backup))}));",'COMMIT;'])
- query('\n'.join(stmts))
- print('Reset committed. Only this business was cleared. Old offline epochs are rejected; each device must discard obsolete queued data.')
- print('Storage removed:',len(evidence),'metadata-linked objects. Unlinked Storage objects require the orphan audit described in the runbook.')
+   with urllib.request.urlopen(req,timeout=60) as response:response.read()
+  except Exception:raise RuntimeError('Storage cleanup incomplete; database reset committed, maintenance retained. Resume using the protected reset plan; do not re-run reset.')
+ remaining=rows(f"SELECT name FROM storage.objects WHERE bucket_id='worktrack-evidence' AND name LIKE '{BUSINESS}/%'")
+ if remaining:raise RuntimeError('Storage objects remain; cleanup incomplete. Maintenance retained.')
+ query(f"UPDATE businesses SET maintenance_mode=false WHERE id='{BUSINESS}';")
+ plan['storage_complete']=True;plan_path.write_text(json.dumps(plan,indent=2))
+ print('Reset and storage cleanup complete. Existing business/Auth preserved. Obsolete offline epochs rejected.')
+
+def reset(args):
+ counts,order=reset_plan();print('Vuyo Contracting only; dry-run unless explicit execution.');print(json.dumps(counts,indent=2));print('Deletion order:',', '.join(order))
+ print('Preserve business/settings, Auth, memberships, roles/pay rules, preferences, accounts chart, audit and migration history.')
+ if not args.execute:return
+ if args.confirm!='RESET VUYO CONTRACTING' or not args.allow_test_history or args.maintenance_confirm!='ALL DEVICES STOPPED':raise RuntimeError('Typed reset/history/device-stop confirmations required.')
+ backup=verify_backup(args.backup)
+ if (backup/'reset-plan.json').exists():raise RuntimeError('This backup already has a reset plan. Resume incomplete storage cleanup or use a new verified backup; do not duplicate reset.')
+ if not os.environ.get('SUPABASE_SERVICE_ROLE_KEY'):raise RuntimeError('Storage API configuration required before reset.')
+ query(f"UPDATE businesses SET maintenance_mode=true WHERE id='{BUSINESS}';")
+ counts,order=reset_plan() # recompute after writes are blocked, not from stale dry-run
+ paths=[r['name'] for r in rows(f"SELECT name FROM storage.objects WHERE bucket_id='worktrack-evidence' AND name LIKE '{BUSINESS}/%'")]
+ plan={'business':BUSINESS,'paths':paths,'database_committed':False,'storage_complete':False};plan_path=backup/'reset-plan.json';plan_path.write_text(json.dumps(plan,indent=2));plan_path.chmod(0o600)
+ stmts=['BEGIN;',f"SELECT pg_advisory_xact_lock(hashtextextended('{BUSINESS}',0));",f"UPDATE memberships SET assigned_job_ids='{{}}' WHERE business_id='{BUSINESS}';",f"UPDATE invitations SET assigned_job_ids='{{}}' WHERE business_id='{BUSINESS}';"]
+ for t in order:stmts.append(f'DELETE FROM public."{t}" WHERE business_id=\'{BUSINESS}\';')
+ stmts += [f"UPDATE accounts SET opening_balance_cents=0,opening_balance_verified=true WHERE business_id='{BUSINESS}';",f"UPDATE businesses SET data_epoch=data_epoch+1 WHERE id='{BUSINESS}';",f"INSERT INTO audit_events(business_id,actor_user_id,entity_type,entity_id,action,reason) VALUES('{BUSINESS}',{sql_literal(args.actor)}::uuid,'business','{BUSINESS}','administrative_reset','Verified-backup clean start; Storage cleanup pending');",'COMMIT;']
+ query('\n'.join(stmts));plan['database_committed']=True;plan_path.write_text(json.dumps(plan,indent=2));finish_storage(args,backup)
+
+def resume(args):
+ if not args.execute or args.confirm!='FINISH VUYO STORAGE CLEANUP':raise RuntimeError('Resume needs explicit --execute --confirm "FINISH VUYO STORAGE CLEANUP".')
+ finish_storage(args,verify_backup(args.backup))
+
 def import_workers(args):
  date=datetime.date.fromisoformat(args.effective_from)
  print('Verified list: 13 active workers, 11 road workers at 25000 cents/day, cook at 50000 cents/week, supervisor rate absent. No attendance or jobs.')
@@ -88,6 +98,7 @@ def import_workers(args):
  if not args.execute: return
  if args.confirm!='IMPORT VERIFIED 13 WORKERS': raise RuntimeError('Explicit worker import confirmation required.')
  verify_backup(args.backup)
+ assert_clean_start(False)
  if int(query(f"SELECT count(*) FROM workers WHERE business_id='{BUSINESS}' AND import_key IS NULL")):
   raise RuntimeError('Unmapped workers exist. Run/reset and review first; no fuzzy name matching or duplicate identities are created.')
  statements=['BEGIN;',f"SELECT pg_advisory_xact_lock(hashtextextended('{BUSINESS}',0));"]
@@ -101,24 +112,42 @@ def import_workers(args):
  for key,name,typ in WORKERS:
   wid=str(uuid.uuid5(uuid.UUID(BUSINESS),'verified-worker:'+key));rid=str(uuid.uuid5(uuid.UUID(BUSINESS),'verified-role:'+typ))
   statements.append(f"INSERT INTO workers(id,business_id,full_name,worker_role_id,employment_start_date,active,opening_balance_cents,opening_balance_verified,import_key,created_by) VALUES('{wid}','{BUSINESS}',{sql_literal(name)},'{rid}','{date}',true,0,true,{sql_literal('verified-2026:'+key)},{sql_literal(args.actor)}::uuid) ON CONFLICT(business_id,import_key) WHERE import_key IS NOT NULL DO NOTHING;")
+ for typ in ['road_worker','cook']:
+  rid=str(uuid.uuid5(uuid.UUID(BUSINESS),'verified-role:'+typ));expected=25000 if typ=='road_worker' else 50000;basis='daily' if typ=='road_worker' else 'weekly';policy='none' if typ=='road_worker' else args.cook_policy
+  statements.append(f"DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pay_rules WHERE business_id='{BUSINESS}' AND worker_role_id='{rid}' AND base_rate_cents={expected} AND pay_basis='{basis}' AND normal_hours_per_day={args.normal_hours} AND normal_workdays_per_week={args.workdays} AND weekly_proration_policy='{policy}' AND effective_from='{date}' AND effective_to IS NULL AND is_confirmed) OR (SELECT count(*) FROM pay_rules WHERE business_id='{BUSINESS}' AND worker_role_id='{rid}')<>1 THEN RAISE EXCEPTION 'Import pay terms conflict; use rate maintenance, not re-import'; END IF; END $$;")
+ for key,name,typ in WORKERS:
+  wid=str(uuid.uuid5(uuid.UUID(BUSINESS),'verified-worker:'+key));rid=str(uuid.uuid5(uuid.UUID(BUSINESS),'verified-role:'+typ))
+  statements.append(f"DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM workers WHERE id='{wid}' AND business_id='{BUSINESS}' AND full_name={sql_literal(name)} AND worker_role_id='{rid}' AND employment_start_date='{date}' AND active AND opening_balance_cents=0 AND opening_balance_verified) THEN RAISE EXCEPTION 'Existing import identity differs; no overwrite'; END IF; END $$;")
  statements += [f"INSERT INTO audit_events(business_id,actor_user_id,entity_type,entity_id,action,reason) VALUES('{BUSINESS}',{sql_literal(args.actor)}::uuid,'worker_import','{BUSINESS}','verified_register_import','13 verified workers; no opening financial transactions');",'COMMIT;']
  query('\n'.join(statements)); verify(args)
+def assert_clean_start(require_workers=True):
+ available=set(tenant_tables())
+ for table in sorted(RESET_TABLES-{'workers'}):
+  if table in available and int(query(f'SELECT count(*) FROM public."{table}" WHERE business_id=\'{BUSINESS}\';')):raise RuntimeError('Clean start has operational/financial history: '+table)
+ if int(query(f"SELECT count(*) FROM accounts WHERE business_id='{BUSINESS}' AND opening_balance_cents<>0")):raise RuntimeError('Account opening balances must be zero.')
+ if int(query(f"SELECT count(*) FROM workers WHERE business_id='{BUSINESS}' AND opening_balance_cents<>0")):raise RuntimeError('Worker opening balances must be zero.')
+ if require_workers:
+  if int(query(f"SELECT count(*) FROM workers WHERE business_id='{BUSINESS}'"))!=13:raise RuntimeError('Exactly 13 worker records required.')
+  distribution=rows(f"SELECT r.role_type,count(*)::int n FROM workers w JOIN worker_roles r ON r.id=w.worker_role_id WHERE w.business_id='{BUSINESS}' AND w.active GROUP BY r.role_type")
+  if {r['role_type']:r['n'] for r in distribution}!={'road_worker':11,'supervisor':1,'cook':1}:raise RuntimeError('Expected exactly 11 road workers, 1 Supervisor and 1 Cook.')
+  for key,name,typ in WORKERS:
+   if not rows(f"SELECT 1 FROM workers w JOIN worker_roles r ON r.id=w.worker_role_id WHERE w.business_id='{BUSINESS}' AND w.import_key={sql_literal('verified-2026:'+key)} AND w.full_name={sql_literal(name)} AND r.role_type={sql_literal(typ)} AND w.active"):raise RuntimeError('Verified worker identity missing or changed.')
+  rid=str(uuid.uuid5(uuid.UUID(BUSINESS),'verified-role:supervisor'))
+  if int(query(f"SELECT count(*) FROM pay_rules WHERE business_id='{BUSINESS}' AND worker_role_id='{rid}'")):raise RuntimeError('Andile Supervisor pay must remain unconfirmed; no invented rate.')
+
 def verify(args):
- print(json.dumps(rows(f"SELECT role_type,count(*)::int active_workers FROM workers w JOIN worker_roles r ON r.id=w.worker_role_id AND r.business_id=w.business_id WHERE w.business_id='{BUSINESS}' AND w.active GROUP BY role_type ORDER BY role_type"),indent=2))
- result=rows(f"SELECT (SELECT count(*) FROM workers WHERE business_id='{BUSINESS}' AND active) workers,(SELECT count(*) FROM jobs WHERE business_id='{BUSINESS}') jobs,(SELECT count(*) FROM payroll_runs WHERE business_id='{BUSINESS}') payroll,(SELECT count(*) FROM expenses WHERE business_id='{BUSINESS}') expenses,(SELECT count(*) FROM journal_entries WHERE business_id='{BUSINESS}') journals,(SELECT count(*) FROM loans WHERE business_id='{BUSINESS}') loans,(SELECT count(*) FROM wage_payments WHERE business_id='{BUSINESS}') payments,(SELECT coalesce(sum(opening_balance_cents),0) FROM workers WHERE business_id='{BUSINESS}') worker_balances")
- print(json.dumps(result,indent=2))
- if args.require_clean:
-  r=result[0]
-  if r['workers']!=13 or any(r[k]!=0 for k in r if k!='workers'): raise RuntimeError('Clean-start verification failed; review counts above.')
+ if args.require_clean:assert_clean_start()
+ print(json.dumps(rows(f"SELECT r.role_type,count(*)::int active_workers FROM workers w JOIN worker_roles r ON r.id=w.worker_role_id WHERE w.business_id='{BUSINESS}' AND w.active GROUP BY r.role_type"),indent=2))
+ print('Verification completed; clean-start assertions applied.' if args.require_clean else 'Read-only roster inspection. Use --require-clean for zero-history assertions.')
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('operation',choices=['reset','import','verify']);p.add_argument('--actor',required=True,type=lambda x:str(uuid.UUID(x)));p.add_argument('--execute',action='store_true');p.add_argument('--dry-run',action='store_true');p.add_argument('--confirm',default='');p.add_argument('--allow-test-history',action='store_true');p.add_argument('--backup',default='');p.add_argument('--effective-from');p.add_argument('--require-clean',action='store_true');p.add_argument('--maintenance-confirm',default='');p.add_argument('--normal-hours',type=float);p.add_argument('--workdays',type=int);p.add_argument('--cook-policy',choices=['full_week_entitlement','prorated_by_days']);args=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('operation',choices=['reset','import','verify','resume']);p.add_argument('--actor',required=True,type=lambda x:str(uuid.UUID(x)));p.add_argument('--execute',action='store_true');p.add_argument('--dry-run',action='store_true');p.add_argument('--confirm',default='');p.add_argument('--allow-test-history',action='store_true');p.add_argument('--backup',default='');p.add_argument('--effective-from');p.add_argument('--require-clean',action='store_true');p.add_argument('--maintenance-confirm',default='');p.add_argument('--normal-hours',type=float);p.add_argument('--workdays',type=int);p.add_argument('--cook-policy',choices=['full_week_entitlement','prorated_by_days']);args=p.parse_args()
  if args.execute and args.dry_run: p.error('Choose dry-run or execute, not both.')
  if args.operation=='import' and (not args.effective_from or args.normal_hours is None or args.workdays is None or not args.cook_policy): p.error('Import requires confirmed --effective-from YYYY-MM-DD, --normal-hours, --workdays and --cook-policy. No legal pay terms are invented.')
  if args.operation=='import' and not (0<args.normal_hours<=24 and 1<=args.workdays<=7): p.error('Invalid normal hours or workdays.')
  if 'DATABASE_URL' not in os.environ: p.error('Set DATABASE_URL securely in deploy/.env.')
  verify_admin(args.actor)
- {'reset':reset,'import':import_workers,'verify':verify}[args.operation](args)
+ {'reset':reset,'import':import_workers,'verify':verify,'resume':resume}[args.operation](args)
 if __name__=='__main__':
  try: main()
  except Exception as exc: print('STOP:',str(exc),file=sys.stderr);sys.exit(1)

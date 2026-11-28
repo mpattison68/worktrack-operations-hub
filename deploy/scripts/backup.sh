@@ -19,18 +19,18 @@ tar -tzf "$OUT/storage.tar.gz" >/dev/null
 # Include exact existing deployment configuration and local overrides, not a
 # replacement generated configuration. Files are only in the protected archive.
 CONFIG_LIST="$OUT/config-list"; : > "$CONFIG_LIST"
-for file in "$ROOT/deploy/.env" "$ROOT/deploy/docker-compose.yml" "$ROOT/deploy/docker-compose.override.yml" "$SUPABASE_CONFIG_DIR/.env" "$SUPABASE_CONFIG_DIR/docker-compose.yml" "$SUPABASE_CONFIG_DIR/docker-compose.override.yml" "$SUPABASE_CONFIG_DIR/docker-compose.worktrack.yml"; do
+for file in "${ENV_FILE:-$ROOT/deploy/.env}" "$ROOT/deploy/docker-compose.yml" "$ROOT/deploy/docker-compose.override.yml" "$SUPABASE_CONFIG_DIR/.env" "$SUPABASE_CONFIG_DIR/docker-compose.yml" "$SUPABASE_CONFIG_DIR/docker-compose.override.yml" "$SUPABASE_CONFIG_DIR/docker-compose.worktrack.yml"; do
  if [[ -f "$file" ]]; then printf '%s\n' "${file#/}" >> "$CONFIG_LIST"; fi
 done
 test -s "$CONFIG_LIST"
-tar -czf "$OUT/configuration.tar.gz" -C / -T "$CONFIG_LIST"
+tar --dereference -czf "$OUT/configuration.tar.gz" -C / -T "$CONFIG_LIST"
 tar -tzf "$OUT/configuration.tar.gz" >/dev/null
 rm "$CONFIG_LIST"
 OUT="$OUT" python3 - <<'PY'
 import datetime,hashlib,json,os,pathlib,subprocess
 p=pathlib.Path(os.environ['OUT'])
 fingerprint=subprocess.check_output(['psql','-X','-t','-A','-c',"SELECT md5(current_database()||':'||(SELECT system_identifier::text FROM pg_control_system()))"],text=True).strip()
-m={'created_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'database_fingerprint':fingerprint,'files':{name:hashlib.sha256((p/name).read_bytes()).hexdigest() for name in ['database.dump','storage.tar.gz','configuration.tar.gz']},'restore_test':'not executed'}
+m={'created_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'database_fingerprint':fingerprint,'files':{name:hashlib.sha256((p/name).read_bytes()).hexdigest() for name in ['database.dump','storage.tar.gz','configuration.tar.gz']},'restore_test':'not executed','quiesced':os.environ.get('BACKUP_QUIESCED_CONFIRM')=='ALL WRITERS STOPPED'}
 (p/'manifest.json').write_text(json.dumps(m,indent=2))
 PY
 if [[ -n "${BACKUP_GPG_RECIPIENT:-}" ]]; then

@@ -63,7 +63,7 @@ describe('Production database acceptance — isolated PostgreSQL, no live busine
  });
  it('unbalanced journal fails and creates no authoritative posting',async()=>{
   const id=crypto.randomUUID();
-  await expect(asUser(ADMIN,`INSERT INTO journal_entries(id,business_id,entry_date,source_type,source_id) VALUES ($1,$2,'2026-11-28','grant_receipt',$1)`,[id,B])).rejects.toThrow('Journal must balance');
+  await expect(asUser(ADMIN,`INSERT INTO journal_entries(id,business_id,entry_date,source_type,source_id) VALUES ($1,$2,'2026-11-28','grant_receipt',$1)`,[id,B])).rejects.toThrow('Posting must match its authoritative source amount');
  });
  it('Owner cannot directly approve a weekly report',async()=>{
   await expect(asUser(OWNER,`INSERT INTO weekly_reports(business_id,job_id,week_start,week_end,status) VALUES ($1,$2,'2026-11-23','2026-11-29','approved')`,[B,crypto.randomUUID()])).rejects.toThrow();
@@ -131,5 +131,109 @@ describe('Live repository paths — isolated database through an API-shaped adap
   const after=await e.listIncrementEBundle(session);expect(after.assets.find(a=>a.id===asset.id)?.status).toBe('unavailable_defect');expect(after.checks.find(c=>c.id===check.check.id)?.stopUseTriggered).toBe(true);expect(after.notifications.some(n=>n.type==='vehicle_stop_use')).toBe(true);
   if(!check.defect)throw new Error('Missing defect');await e.resolveAssetDefect(session,check.defect.id,'Repaired and verified in isolated test');
   const resolved=await e.listIncrementEBundle(session);expect(resolved.assets.find(a=>a.id===asset.id)?.status).toBe('available');
+ });
+ it('weekly submit/return/resubmit/approve/amend retains locked snapshots',async()=>{
+  const jobId=crypto.randomUUID();await execute("INSERT INTO jobs(id,business_id,name,customer_name,road_or_area) VALUES($1,$2,'Report fixture','Test','Test road')",[jobId,B]);
+  const snapshot={businessId:B,jobId,weekStart:'2026-11-23',weekEnd:'2026-11-29',missingReceiptsCount:0,truckChecksCount:1,cumulativeCompletedPercent:10} as unknown as import('@/lib/domain/increment-e-types').WeeklyReportSnapshot;
+  const submitted=await e.submitWeeklyReport(session,{snapshot,missingEvidenceAcknowledged:true});
+  await e.returnWeeklyReport(session,submitted.id,'Correct field records');
+  await e.submitWeeklyReport(session,{snapshot,missingEvidenceAcknowledged:true});
+  await e.approveWeeklyReport(session,submitted.id);
+  await e.startWeeklyReportAmendment(session,submitted.id,'Corrected source records');
+  await e.submitWeeklyReport(session,{snapshot:{...snapshot,cumulativeCompletedPercent:20},missingEvidenceAcknowledged:true});
+  await e.approveWeeklyReport(session,submitted.id);
+  const after=(await e.listIncrementEBundle(session)).reports.find(r=>r.id===submitted.id);if(!after)throw new Error('Report missing');
+  expect(after.currentRevision).toBe(3);expect(after.status).toBe('approved');expect(after.revisions.filter(r=>r.status==='approved').map(r=>r.snapshot.cumulativeCompletedPercent)).toEqual([10,20]);
+  await expect(e.submitWeeklyReport(session,{snapshot,missingEvidenceAcknowledged:true})).rejects.toThrow('locked');
+ });
+});
+
+const JOB='55555555-5555-4555-8555-555555555555',WORKER='66666666-6666-4666-8666-666666666666',ROLE='77777777-7777-4777-8777-777777777777';
+async function payrollFixture(){
+ await db.exec(`RESET ROLE;SELECT set_config('request.jwt.claim.sub','',false);
+ INSERT INTO jobs(id,business_id,name,customer_name,road_or_area) VALUES('${JOB}','${B}','Synthetic approval test','Test customer','Test road');
+ INSERT INTO worker_roles(id,business_id,name,role_type,shares_crew_schedule) VALUES('${ROLE}','${B}','Test road role','road_worker',true);
+ INSERT INTO workers(id,business_id,full_name,worker_role_id,employment_start_date) VALUES('${WORKER}','${B}','Synthetic approval worker','${ROLE}','2026-11-01');
+ INSERT INTO worker_assignments(business_id,worker_id,job_id,assigned_from) VALUES('${B}','${WORKER}','${JOB}','2026-11-01');
+ INSERT INTO pay_rules(business_id,worker_role_id,pay_basis,base_rate_cents,normal_hours_per_day,normal_workdays_per_week,effective_from,is_confirmed) VALUES('${B}','${ROLE}','daily',25000,9,5,'2026-11-01',true);
+ INSERT INTO team_days(business_id,job_id,work_date,day_status,normal_hours,updated_by_email) SELECT '${B}','${JOB}',d::date,CASE WHEN d::date='2026-11-23' THEN 'worked' ELSE 'no_work' END,CASE WHEN d::date='2026-11-23' THEN 9 ELSE 0 END,'test@isolated.invalid' FROM generate_series('2026-11-23'::date,'2026-11-29'::date,interval '1 day') d;`);
+}
+async function payrollArgs(revision:number,approve:boolean,net=25000){
+ const token=await asUser(ADMIN,'SELECT worktrack_payroll_source_token($1,$2,$3) token',[B,JOB,'2026-11-23']);
+ const run={id:crypto.randomUUID(),business_id:B,job_id:JOB,week_start_date:'2026-11-23',week_end_date:'2026-11-29',revision:revision+1,gross_total_cents:25000,adjustments_total_cents:0,deductions_total_cents:0,net_total_cents:net,correction_reason:revision>0?'Verified correction test':null};
+ const line={worker_id:WORKER,days_worked:1,normal_hours:9,weekday_ot_hours:0,saturday_hours:0,sunday_hours:0,public_holiday_hours:0,normal_pay_cents:25000,weekday_ot_pay_cents:0,saturday_pay_cents:0,sunday_pay_cents:0,public_holiday_pay_cents:0,gross_pay_cents:25000,adjustments_cents:0,deductions_cents:0,net_pay_cents:net,rule_snapshots:[]};
+ return [B,1,JSON.stringify(run),JSON.stringify([line]),'[]',(token.rows[0] as {token:string}).token,revision,approve];
+}
+const SAVE_PAYROLL='SELECT to_jsonb(worktrack_save_payroll($1,$2,$3,$4,$5,$6,$7,$8)) saved';
+describe('Atomic production approval regression tests',()=>{
+ it('Owner draft persists complete header/earnings; only Admin approves',async()=>{
+  await payrollFixture();const args=await payrollArgs(0,false);
+  const saved=await asUser(OWNER,SAVE_PAYROLL,args);const run=(saved.rows[0] as {saved:{id:string;status:string}}).saved;
+  expect(run.status).toBe('draft');expect((await asUser(ADMIN,'SELECT count(*)::int count FROM payroll_earnings WHERE payroll_run_id=$1',[run.id])).rows[0]).toEqual({count:1});
+  await expect(asUser(OWNER,'SELECT approve_payroll_run($1,$2)',[run.id,'forged'])).rejects.toThrow('Only Admin');
+  const approved=await asUser(ADMIN,'SELECT to_jsonb(approve_payroll_run($1,$2)) saved',[run.id,'forged']);expect((approved.rows[0] as {saved:{approved_by_email:string}}).saved.approved_by_email).toBe('admin@isolated.invalid');
+ });
+ it('approval failure rolls back header and earnings instead of leaving a partial draft',async()=>{
+  const before=(await asUser(ADMIN,'SELECT count(*)::int n FROM payroll_runs')).rows[0];
+  await expect(asUser(ADMIN,SAVE_PAYROLL,await payrollArgs(1,true,1))).rejects.toThrow('Invalid earning arithmetic');
+  expect((await asUser(ADMIN,'SELECT count(*)::int n FROM payroll_runs')).rows[0]).toEqual(before);
+ });
+ it('correction retains immutable approved history and refuses stale revision',async()=>{
+  const args=await payrollArgs(1,true);await asUser(ADMIN,SAVE_PAYROLL,args);
+  expect((await asUser(ADMIN,'SELECT status FROM payroll_runs WHERE job_id=$1 ORDER BY revision',[JOB])).rows).toEqual([{status:'superseded'},{status:'approved'}]);
+  await expect(asUser(ADMIN,SAVE_PAYROLL,args)).rejects.toThrow('revision changed');
+  await expect(asUser(ADMIN,"UPDATE payroll_runs SET correction_reason='changed' WHERE status='superseded'")).rejects.toThrow('immutable');
+ });
+ it('changed payroll source is rejected before any write',async()=>{
+  const args=await payrollArgs(2,true);
+  await asUser(ADMIN,"UPDATE team_days SET notes='Another device changed attendance' WHERE job_id=$1 AND work_date='2026-11-23'",[JOB]);
+  await expect(asUser(ADMIN,SAVE_PAYROLL,args)).rejects.toThrow('inputs changed');
+ });
+ it('unknown attendance cannot be approved through the direct RPC',async()=>{
+  await asUser(ADMIN,"UPDATE team_days SET day_status='unknown' WHERE job_id=$1 AND work_date='2026-11-23'",[JOB]);
+  await expect(asUser(ADMIN,SAVE_PAYROLL,await payrollArgs(2,true))).rejects.toThrow('Unknown attendance');
+  await asUser(ADMIN,"UPDATE team_days SET day_status='worked' WHERE job_id=$1 AND work_date='2026-11-23'",[JOB]);
+ });
+ it('balanced arbitrary journal sources are rejected',async()=>{
+  const id=crypto.randomUUID();await expect(asUser(OWNER,"INSERT INTO journal_entries(id,business_id,entry_date,source_type,source_id) VALUES($1,$2,'2026-11-28','invented_source',$1)",[id,B])).rejects.toThrow('Unsupported financial');
+ });
+ it('milestone received totals cannot change without real receipt history',async()=>{
+  await expect(asUser(ADMIN,"INSERT INTO payment_milestones(business_id,job_id,label,expected_date,expected_amount_cents,received_amount_cents,status) VALUES($1,$2,'Forged receipt','2026-11-28',10000,10000,'received')",[B,JOB])).rejects.toThrow('Customer receipts must reconcile');
+ });
+});
+
+describe('Scope approval transaction and permission regression',()=>{
+ it('failed waypoint insertion rolls back planned-job creation and scope approval',async()=>{
+  const id=crypto.randomUUID();await asUser(ADMIN,"INSERT INTO assessments(id,business_id,name,customer_name,road_or_area,original_distance_meters,accepted_distance_meters) VALUES($1,$2,'Scope fixture','Test customer','Test road',100,100)",[id,B]);
+  const existing=(await asUser(ADMIN,'SELECT to_jsonb(a) row FROM assessments a WHERE id=$1',[id])).rows[0] as {row:Record<string,unknown>};
+  const payload={...existing.row,status:'approved',revision:1,benchmark_productivity_sqm:100,productive_crew_size:1,road_worker_daily_rate_cents:25000,workdays_per_week:5,revisions_json:[{revision:1,reason:'Test baseline'}],route_points_json:[{clientPointId:crypto.randomUUID(),pointType:'start',latitude:100,longitude:20,gpsAccuracyMeters:5,captureMethod:'gps'}]};
+  const before=(await asUser(ADMIN,'SELECT count(*)::int count FROM jobs')).rows[0];
+  await expect(asUser(ADMIN,'SELECT worktrack_save_assessment($1,1,$2,1,$3)',[B,JSON.stringify(payload),crypto.randomUUID()])).rejects.toThrow();
+  expect((await asUser(ADMIN,'SELECT count(*)::int count FROM jobs')).rows[0]).toEqual(before);
+  const saved=await asUser(ADMIN,'SELECT worktrack_save_assessment($1,1,$2,1,$3) result',[B,JSON.stringify({...payload,route_points_json:[]}),crypto.randomUUID()]);
+  const result=(saved.rows[0] as {result:{record:{job_id:string;edit_version:number}}}).result;expect(result.record.job_id).toBeTruthy();
+  await expect(asUser(OWNER,'SELECT worktrack_save_assessment($1,1,$2,$3,$4)',[B,JSON.stringify({...payload,status:'draft'}),result.record.edit_version,crypto.randomUUID()])).rejects.toThrow('locked');
+ });
+});
+
+describe('Operational read and reviewer boundaries',()=>{
+ it('assigned Supervisor cannot read raw financial job/worker/scope/report rows',async()=>{
+  await db.exec(`RESET ROLE;SELECT set_config('request.jwt.claim.sub','',false);UPDATE memberships SET assigned_job_ids=ARRAY['${JOB}']::uuid[] WHERE user_id='${SUPERVISOR}';UPDATE jobs SET contract_value_cents=123456,opening_cash_allocation_cents=50000 WHERE id='${JOB}';`);
+  expect((await asUser(SUPERVISOR,'SELECT contract_value_cents FROM jobs WHERE id=$1',[JOB])).rows).toEqual([]);
+  expect((await asUser(SUPERVISOR,'SELECT opening_balance_cents FROM workers')).rows).toEqual([]);
+  expect((await asUser(SUPERVISOR,'SELECT road_worker_daily_rate_cents FROM assessments')).rows).toEqual([]);
+  expect((await asUser(SUPERVISOR,'SELECT locked_snapshot FROM weekly_reports')).rows).toEqual([]);
+  const op=(await asUser(SUPERVISOR,"SELECT worktrack_operational_read($1,'jobs') rows",[B])).rows[0] as {rows:Array<{id:string;contract_value_cents:number;opening_cash_allocation_cents:number}>};
+  expect(op.rows.find(j=>j.id===JOB)).toMatchObject({contract_value_cents:0,opening_cash_allocation_cents:0});
+  await expect(asUser(SUPERVISOR,"SELECT worktrack_operational_read($1,'jobs')",[OTHER])).rejects.toThrow('Active business');
+ });
+ it('a field caller cannot self-verify progress or spoof its actor',async()=>{
+  const result=await asUser(SUPERVISOR,"INSERT INTO progress_entries(business_id,job_id,section_id,verge_side,activity,reported_date,start_chainage_meters,end_chainage_meters,stage_status,verification_state,submitted_by_email) VALUES($1,$2,'test-section','left','cutting','2026-11-28',0,100,'complete','verified','forged') RETURNING verification_state,submitted_by_email",[B,JOB]);
+  expect(result.rows[0]).toEqual({verification_state:'reported',submitted_by_email:'supervisor@isolated.invalid'});
+ });
+ it('replay receipts are private to the capturing user',async()=>{
+  expect((await asUser(SUPERVISOR,'SELECT * FROM sync_idempotency_keys')).rows).toEqual([]);
+  expect((await asUser(OWNER,'SELECT * FROM sync_idempotency_keys')).rows).toEqual([]);
+  expect((await asUser(ADMIN,'SELECT * FROM sync_idempotency_keys')).rows.length).toBeGreaterThan(0);
  });
 });

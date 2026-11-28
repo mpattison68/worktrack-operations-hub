@@ -21,8 +21,18 @@
 - [x] Implement tenant/actor/epoch guards, account administration, offline capture paths and controlled reset/import helpers
 - [x] Preserve verified 13-worker requirements; no live reset/import executed
 - [x] Record 68 passing tests and limitations in `docs/production-readiness-status.md`
-- [ ] Finish full repository transaction/approval/retry verification and any remaining non-atomic C/report workflows
+- [x] Complete atomic payroll/scope approval and report review regressions; remaining real-service transaction/retry matrix is in environmental checklist
 - [ ] Verify Auth administration, SMTP, private storage failures/orphans, and two-device offline/reset behavior (requires isolated service environment)
 - [ ] Validate reset/import exact counts, rates, repeatability and recovery against a restored database (requires backup and management pay-calendar inputs)
 - [ ] Reconcile preserved VM overrides and run Node Docker, PostgreSQL 17.6 upgrade and full backup/restore drills (requires isolated VM)
 - [ ] Run physical Android trial and approve production release (requires customer devices and completed checks above)
+
+## Implementation and release-readiness report request
+- [x] Complete atomic payroll approval and source validation, strict weekly-report revisions, and atomic linked scope/job approval
+- [x] Fix confirmed reset/import, cache and notification defects; add regression coverage
+- [x] Re-run complete tests and document exact persistence, migration and security status
+- [x] Write detailed isolated-VM/Android acceptance checklist and existing-VM upgrade procedure
+- [x] Commit completed changes; distinguish local commit from unverifiable GitHub sync status
+
+## Explicit implementation limits
+- Scheduled SMTP digests, offline interruption/bulk-edit capture and general financial reversal UI remain unimplemented; scope/acceptance decision required before a release needing them.

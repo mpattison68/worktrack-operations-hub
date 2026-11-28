@@ -297,6 +297,7 @@ export interface FinanceBundle {
   customerReceipts?: CustomerReceipt[];
   expenseSettlements?: ExpenseSettlement[];
   forecastAssumptions?: ForecastAssumption[];
+  fundingReceipts?: Array<{id:string;businessId:string;receiptDate:string;amountCents:number;accountId:string;journalEntryId:string;reference:string;recordedBy:string;createdAt:string}>;
 }
 export interface CustomerReceipt {
  id:string;businessId:string;milestoneId:string;jobId:string;receiptDate:string;amountCents:number;accountId:string;reference:string;journalEntryId:string;recordedBy:string;createdAt:string;

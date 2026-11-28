@@ -21,7 +21,7 @@ Do not reinstall the backend, replace Nginx Proxy Manager, expose database ports
 3. Restore it into a separate test VM. Test all forward migrations and the real workflows there first.
 4. Reconcile the updated application Compose definition with the preserved local definition and override. Keep `npm-proxy` and existing port mappings.
 5. Build with the pinned Bun lockfile and `NITRO_PRESET=node-server`. Do not substitute `npm install` in Docker.
-6. Apply only pending migrations through `deploy/scripts/migrate.sh`. Existing applied migration 0006 must not be replayed; the forward migrations are 0009–0017. Seventeen files exist in total.
+6. Apply only pending migrations through `deploy/scripts/migrate.sh`. Existing applied migration 0006 must not be replayed; the forward migrations are 0009–0020. Twenty files exist in total.
 7. Restart only the WorkTrack web service using **both** the working base Compose file and its preserved override.
 8. Verify HTTPS, Auth, permissions, two-device reads/writes, private evidence, offline conflicts and backup restore before admitting field data.
 

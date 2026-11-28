@@ -1,3 +1,4 @@
+import type {ApiRow} from "@/lib/data/api-row";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { SYNTHETIC_BIZ_A } from "@/lib/data/synthetic-fixtures";
 import { saveJob } from "@/lib/data/repository";
@@ -157,7 +158,7 @@ export async function listAssessmentsAndBenchmarks(
   if (isSupabaseConfigured && supabase) {
     const [{ data: bmData, error: bmErr }, { data: asData, error: asErr }] = await Promise.all([
       supabase.from("benchmarks").select("*").eq("business_id", session.businessId),
-      supabase
+      session.role==='supervisor' ? supabase.rpc('worktrack_operational_read',{p_business:session.businessId,p_table:'assessments'}) : supabase
         .from("assessments")
         .select("*")
         .eq("business_id", session.businessId)
@@ -175,7 +176,7 @@ export async function listAssessmentsAndBenchmarks(
         sourceNote: b.source_note ?? "",
         version: b.version,
       })),
-      assessments: (asData ?? []).map((a) => ({
+      assessments: ((asData ?? []) as Array<ApiRow<SiteAssessment> & {sections_json:SiteAssessment['sections'];route_points_json:SiteAssessment['routePoints'];budget_lines_json:SiteAssessment['budgetLines'];revisions_json:SiteAssessment['revisions']}>).map((a) => ({
         id: a.id,
         editVersion:Number(a.edit_version??1),
         businessId: a.business_id,
@@ -321,6 +322,7 @@ export async function saveAssessmentDraft(
       id: data.id,
       editVersion:Number(data.edit_version??1),
       businessId: data.business_id,
+      jobId:data.job_id,
       startGps: derivedStartEnd.startGps,
       endGps: derivedStartEnd.endGps,
       routePoints: normalizedRoutePoints,
@@ -531,7 +533,7 @@ export async function approveAssessmentScope(
 
   // Create or update linked Planned Job on baseline approval
   let linkedJobId = assessment.jobId;
-  if (!linkedJobId) {
+  if (!linkedJobId && session.mode !== "supabase") {
     const createdJob = await saveJob(session, {
       name: assessment.name,
       customerName: assessment.customerName || "Pending customer confirmation",

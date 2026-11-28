@@ -90,23 +90,8 @@ export function resolveEffectiveRateForDate(
     };
   }
 
-  // Approved override without a base role rule
-  return {
-    payRuleId: "override-only",
-    overrideId: approvedOverride!.id,
-    effectiveFrom: approvedOverride!.effectiveFrom,
-    effectiveTo: approvedOverride!.effectiveTo,
-    payBasis: approvedOverride!.payBasis,
-    baseRateCents: approvedOverride!.proposedRateCents,
-    normalHoursPerDay: 9,
-    normalWorkdaysPerWeek: 5,
-    weekdayOtHourlyCents: null,
-    saturdayRateCents: null,
-    sundayRateCents: null,
-    publicHolidayRateCents: null,
-    weeklyProrationPolicy: "none",
-    isConfirmed: true,
-  };
+  // An override changes pay, not the legal hours/calendar. Never invent those.
+  return null;
 }
 
 export interface EffectiveWorkerDay {

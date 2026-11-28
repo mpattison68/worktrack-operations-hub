@@ -15,6 +15,11 @@ CREATE TABLE IF NOT EXISTS public.schema_migrations_worktrack (
  filename text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now()
 );
 REVOKE ALL ON public.schema_migrations_worktrack FROM PUBLIC, anon, authenticated;
+SELECT to_regclass('public.businesses') IS NOT NULL AND NOT EXISTS(SELECT 1 FROM public.schema_migrations_worktrack WHERE filename='202611270001_increment_a_foundation.sql') AS needs_baseline \gset
+\if :needs_baseline
+\echo Existing schema has no verified migration baseline. STOP: use baseline-existing-migrations.sh after confirming migrations 0001-0008.
+\quit 3
+\endif
 SQL
 while IFS= read -r file; do
  base="$(basename "$file")"

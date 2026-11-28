@@ -36,7 +36,7 @@ import { SYNTHETIC_BIZ_A, SYNTHETIC_JOB_1, SYNTHETIC_JOB_2 } from "@/lib/data/sy
 
 
 const FINANCE_TABLES: TableMapping[] = [
- {key:'accounts',table:'accounts'},
+ {key:'accounts',table:'accounts'}, {key:'fundingReceipts',table:'funding_receipts'},
  {key:'journalEntries',table:'journal_entries',children:{key:'lines',table:'journal_lines',foreignKey:'journal_entry_id'}},
  {key:'wagePayments',table:'wage_payments',children:{key:'allocations',table:'wage_allocations',foreignKey:'wage_payment_id'}},
  {key:'expenses',table:'expenses',rename:{receiptAttachment:'receipt_attachment'}},
@@ -701,6 +701,7 @@ export async function recordOrMatchTransfer(
       t.amountCents === input.amountCents,
   );
 
+  if(existing && (existing.transferDate!==input.transferDate || existing.fromAccountId!==input.fromAccountId || existing.toAccountId!==input.toAccountId || existing.transferKind!==input.transferKind))throw new Error('Transfer date, source, destination and kind must match the other party exactly.');
   const postTransferJournal = (t: CashTransferRecord): JournalEntry => {
     const toAcc = state.accounts.find((a) => a.id === t.toAccountId);
     if (!toAcc) throw new Error("Destination account not found.");
@@ -713,13 +714,13 @@ export async function recordOrMatchTransfer(
       creditAcc = fromAcc;
     } else if (t.transferKind === "lender_advance") {
       creditAcc = findAccountByType(state, session.businessId, "loan_liability");
-      sourceType = "loan_advance";
+      sourceType = "transfer";
     } else if (t.transferKind === "restricted_grant") {
       creditAcc = findAccountByType(state, session.businessId, "restricted_grant_income");
-      sourceType = "grant_receipt";
+      sourceType = "transfer";
     } else {
       creditAcc = findAccountByType(state, session.businessId, "owner_equity");
-      sourceType = "owner_contribution";
+      sourceType = "transfer";
     }
 
     const je = appendBalancedJournalEntry(state, {
@@ -1024,6 +1025,8 @@ export async function recordRestrictedGrantReceipt(
     ],
     createdBy: session.userId,
   });
+  state.fundingReceipts??=[];
+  state.fundingReceipts.push({id:je.sourceId,businessId:session.businessId,receiptDate:input.receiptDate,amountCents:input.amountCents,accountId:restrictedAcc.id,journalEntryId:je.id,reference:je.reference,recordedBy:session.userId,createdAt:new Date().toISOString()});
   await saveFinanceStore(session, state);
   return je;
 }
