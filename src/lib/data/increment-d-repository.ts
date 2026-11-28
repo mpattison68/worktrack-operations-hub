@@ -18,6 +18,7 @@ import type {
   LoanAccount,
   LoanEvent,
   LoanEventType,
+  LoanRepaymentSchedule,
   PaymentMethod,
   PaymentMilestone,
   ReceiptAttachmentMeta,
@@ -26,6 +27,7 @@ import type {
 import {
   allocateWorkerWagePayment,
   calculateFuelUnitCostCents,
+  calculateLoanBalanceCents,
   computeAccountBalanceCents,
   findDuplicateExpense,
   validateBalancedJournalLines,
@@ -43,6 +45,7 @@ const FINANCE_TABLES: TableMapping[] = [
  {key:'expenseRequests',table:'expense_requests'}, {key:'transfers',table:'transfers'},
  {key:'reconciliations',table:'reconciliations'}, {key:'milestones',table:'payment_milestones'},
  {key:'loans',table:'loans'}, {key:'loanEvents',table:'loan_events'},
+ {key:'loanRepaymentSchedules',table:'loan_repayment_schedules'},
  {key:'customerReceipts',table:'customer_receipts'}, {key:'expenseSettlements',table:'expense_settlements'}, {key:'forecastAssumptions',table:'forecast_assumptions'},
 ];
 async function loadFinanceStore(session: AuthSession): Promise<FinanceBundle> {
@@ -169,6 +172,9 @@ function createInitialFinanceStore(): FinanceBundle {
         lenderName: "Equipment & Working-Capital Lender (Synthetic)",
         openingPrincipalCents: 25690000, // Candidate R 256 900.00 (unverified)
         openingPrincipalVerified: false,
+        effectiveDate: "2026-11-01",
+        reference: "SYN-LOAN-001",
+        notes: "Synthetic opening balance carried from previous contract.",
         interestRatePercent: 0,
         securityAssetNote: "4-ton crew truck recorded as business asset; security status subject to signed agreement.",
         repaymentTermsNote:
@@ -177,6 +183,7 @@ function createInitialFinanceStore(): FinanceBundle {
       },
     ],
     loanEvents: [],
+    loanRepaymentSchedules: [],
   };
 }
 
@@ -277,6 +284,7 @@ export async function listFinanceBundle(session: AuthSession): Promise<FinanceBu
       milestones: [],
       loans: [],
       loanEvents: [],
+      loanRepaymentSchedules: [],
     };
   }
 
@@ -291,6 +299,7 @@ export async function listFinanceBundle(session: AuthSession): Promise<FinanceBu
     milestones: state.milestones.filter((m) => m.businessId === session.businessId),
     loans: state.loans.filter((l) => l.businessId === session.businessId),
     loanEvents: state.loanEvents.filter((ev) => ev.businessId === session.businessId),
+    loanRepaymentSchedules: (state.loanRepaymentSchedules ?? []).filter((s) => s.businessId === session.businessId),
     customerReceipts:state.customerReceipts ?? [],expenseSettlements:state.expenseSettlements ?? [],forecastAssumptions:state.forecastAssumptions ?? [],
   };
 }
@@ -873,6 +882,19 @@ export async function recordCustomerMilestoneReceipt(
   const acc = state.accounts.find((a) => a.id === input.accountId && a.businessId === session.businessId);
   if (!acc || !acc.isCashAccount) throw new Error("Select a valid cash or bank account.");
   const revAcc = findAccountByType(state, session.businessId, "customer_revenue");
+  const cleanRef = input.reference.trim();
+  if (
+    cleanRef &&
+    (state.customerReceipts ?? []).some(
+      (r) =>
+        r.milestoneId === ms.id &&
+        r.receiptDate === input.receivedDate &&
+        r.amountCents === input.receivedAmountCents &&
+        r.reference.trim().toLowerCase() === cleanRef.toLowerCase(),
+    )
+  ) {
+    throw new Error("Duplicate customer receipt detected (same milestone, date, amount, and reference).");
+  }
 
   const receiptId = newId();
   const je = appendBalancedJournalEntry(state, {
@@ -946,6 +968,26 @@ export async function recordLoanEvent(
     throw new Error(
       "Restricted funding cannot be used for loan repayment unless eligibility is explicitly confirmed and approved.",
     );
+  }
+  if (input.eventType === "repayment") {
+    const balance = calculateLoanBalanceCents(loan, state.loanEvents);
+    if (input.amountCents > balance.remainingPrincipalCents) {
+      throw new Error("Repayment exceeds remaining loan principal.");
+    }
+  }
+  const cleanRef = input.reference.trim();
+  if (
+    cleanRef &&
+    state.loanEvents.some(
+      (ev) =>
+        ev.loanId === loan.id &&
+        ev.eventType === input.eventType &&
+        ev.eventDate === input.eventDate &&
+        ev.amountCents === input.amountCents &&
+        ev.reference.trim().toLowerCase() === cleanRef.toLowerCase(),
+    )
+  ) {
+    throw new Error("Duplicate loan transaction detected (same loan, type, date, amount, and reference).");
   }
 
   const loanLiab = findAccountByType(state, session.businessId, "loan_liability");
@@ -1054,11 +1096,100 @@ export async function setupFinanceAccounts(session: AuthSession): Promise<void> 
  if (error) throw new Error(error.message);
 }
 
-export async function createZeroOpeningLoan(session: AuthSession,lenderName:string,terms:string):Promise<LoanAccount>{
- if(!can(session.role,'loans.edit') || !lenderName.trim())throw new Error('Admin and lender name required.');
- const state=await loadFinanceStore(session);
- const loan:LoanAccount={id:newId(),businessId:session.businessId,lenderName:lenderName.trim(),openingPrincipalCents:0,openingPrincipalVerified:true,interestRatePercent:0,securityAssetNote:'',repaymentTermsNote:terms.trim(),createdAt:new Date().toISOString()};
- state.loans.push(loan);await saveFinanceStore(session,state);return loan;
+export async function createLoanAccount(
+  session: AuthSession,
+  input: {
+    lenderName: string;
+    openingPrincipalCents: number;
+    effectiveDate: string;
+    reference: string;
+    notes?: string;
+    repaymentTermsNote?: string;
+    securityAssetNote?: string;
+    openingPrincipalVerified?: boolean;
+  },
+): Promise<LoanAccount> {
+  if (!can(session.role, "loans.edit")) {
+    throw new Error("Access denied: only Management / Admin can create a loan account.");
+  }
+  if (!input.lenderName.trim()) {
+    throw new Error("Lender name is required.");
+  }
+  if (!Number.isSafeInteger(input.openingPrincipalCents) || input.openingPrincipalCents < 0) {
+    throw new Error("Opening balance must be a valid non-negative ZAR amount.");
+  }
+  if (!input.effectiveDate.trim()) {
+    throw new Error("Effective date is required.");
+  }
+  const state = await loadFinanceStore(session);
+  const loan: LoanAccount = {
+    id: newId(),
+    businessId: session.businessId,
+    lenderName: input.lenderName.trim(),
+    openingPrincipalCents: input.openingPrincipalCents,
+    openingPrincipalVerified: input.openingPrincipalVerified ?? true,
+    effectiveDate: input.effectiveDate.trim(),
+    reference: input.reference.trim(),
+    notes: (input.notes ?? "").trim(),
+    interestRatePercent: 0,
+    securityAssetNote: (input.securityAssetNote ?? "").trim(),
+    repaymentTermsNote: (input.repaymentTermsNote ?? "").trim(),
+    createdAt: new Date().toISOString(),
+  };
+  state.loans.push(loan);
+  // Opening loan liability never increases cash/bank accounts or affects job profitability.
+  await saveFinanceStore(session, state);
+  return loan;
+}
+
+export async function createZeroOpeningLoan(session: AuthSession, lenderName: string, terms: string): Promise<LoanAccount> {
+  return createLoanAccount(session, {
+    lenderName,
+    openingPrincipalCents: 0,
+    effectiveDate: new Date().toISOString().slice(0, 10),
+    reference: "",
+    notes: "",
+    repaymentTermsNote: terms,
+    openingPrincipalVerified: true,
+  });
+}
+
+export async function addLoanRepaymentSchedule(
+  session: AuthSession,
+  input: {
+    loanId: string;
+    expectedDate: string;
+    expectedAmountCents: number;
+    reference: string;
+    note?: string;
+  },
+): Promise<LoanRepaymentSchedule> {
+  if (!can(session.role, "loans.edit")) {
+    throw new Error("Access denied: only Management / Admin can add agreed repayment schedules.");
+  }
+  if (!Number.isSafeInteger(input.expectedAmountCents) || input.expectedAmountCents <= 0) {
+    throw new Error("Planned repayment amount must be a positive ZAR value.");
+  }
+  if (!input.expectedDate.trim()) {
+    throw new Error("Expected repayment date is required.");
+  }
+  const state = await loadFinanceStore(session);
+  const loan = state.loans.find((l) => l.id === input.loanId && l.businessId === session.businessId);
+  if (!loan) throw new Error("Loan account not found.");
+  const item: LoanRepaymentSchedule = {
+    id: newId(),
+    businessId: session.businessId,
+    loanId: loan.id,
+    expectedDate: input.expectedDate.trim(),
+    expectedAmountCents: input.expectedAmountCents,
+    reference: input.reference.trim(),
+    note: (input.note ?? "").trim(),
+    createdBy: session.userId,
+    createdAt: new Date().toISOString(),
+  };
+  (state.loanRepaymentSchedules ??= []).push(item);
+  await saveFinanceStore(session, state);
+  return item;
 }
 export async function createCustomerInvoice(session:AuthSession,input:{jobId:string;label:string;reference:string;expectedDate:string;amountCents:number}):Promise<PaymentMilestone>{
  if(session.role!=='admin')throw new Error('Only Admin creates customer invoices.');

@@ -219,9 +219,24 @@ export interface LoanAccount {
   lenderName: string;
   openingPrincipalCents: number;
   openingPrincipalVerified: boolean;
+  effectiveDate?: string; // YYYY-MM-DD
+  reference?: string;
+  notes?: string;
   interestRatePercent: 0; // Explicitly R0 interest per spec
   securityAssetNote: string;
   repaymentTermsNote: string;
+  createdAt: string;
+}
+
+export interface LoanRepaymentSchedule {
+  id: string;
+  businessId: string;
+  loanId: string;
+  expectedDate: string; // YYYY-MM-DD
+  expectedAmountCents: number;
+  reference: string;
+  note: string;
+  createdBy?: string | null;
   createdAt: string;
 }
 
@@ -294,6 +309,7 @@ export interface FinanceBundle {
   milestones: PaymentMilestone[];
   loans: LoanAccount[];
   loanEvents: LoanEvent[];
+  loanRepaymentSchedules?: LoanRepaymentSchedule[];
   customerReceipts?: CustomerReceipt[];
   expenseSettlements?: ExpenseSettlement[];
   forecastAssumptions?: ForecastAssumption[];

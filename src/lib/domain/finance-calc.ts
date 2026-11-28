@@ -6,6 +6,8 @@ import type {
   LedgerAccount,
   LoanAccount,
   LoanEvent,
+  LoanRepaymentSchedule,
+  PaymentMilestone,
   WageAllocation,
   WagePayment,
   WeeklyCashForecastInput,
@@ -13,6 +15,7 @@ import type {
   WeeklyCashForecastRow,
 } from "@/lib/domain/increment-d-types";
 import type { PayrollRun } from "@/lib/domain/increment-c-types";
+import type { Job } from "@/lib/domain/types";
 
 /**
  * Verify that a set of journal lines is strictly balanced in integer cents
@@ -269,6 +272,250 @@ export function calculateLoanBalanceCents(
     totalRepaymentsCents,
     totalAdjustmentsCents,
     remainingPrincipalCents,
+  };
+}
+
+export interface LoanStatementRow {
+  id: string;
+  date: string;
+  type: "opening" | "advance" | "repayment" | "agreed_adjustment";
+  reference: string;
+  description: string;
+  advanceCents: number;
+  repaymentCents: number;
+  adjustmentCents: number;
+  runningBalanceCents: number;
+  evidenceStatus: string;
+}
+
+export interface LoanStatement {
+  loanId: string;
+  lenderName: string;
+  effectiveDate: string;
+  reference: string;
+  openingPrincipalCents: number;
+  openingPrincipalVerified: boolean;
+  totalAdvancesCents: number;
+  totalRepaymentsCents: number;
+  totalAdjustmentsCents: number;
+  closingBalanceCents: number;
+  rows: LoanStatementRow[];
+}
+
+/**
+ * Build a chronological zero-interest loan statement with running principal balances.
+ */
+export function buildLoanStatement(loan: LoanAccount, events: LoanEvent[]): LoanStatement {
+  const loanEvents = events
+    .filter((ev) => ev.loanId === loan.id)
+    .slice()
+    .sort((a, b) =>
+      a.eventDate.localeCompare(b.eventDate) ||
+      a.createdAt.localeCompare(b.createdAt) ||
+      a.id.localeCompare(b.id),
+    );
+
+  let running = loan.openingPrincipalCents;
+  let totalAdvancesCents = 0;
+  let totalRepaymentsCents = 0;
+  let totalAdjustmentsCents = 0;
+
+  const effectiveDate = loan.effectiveDate || loan.createdAt.slice(0, 10);
+  const rows: LoanStatementRow[] = [
+    {
+      id: `${loan.id}-opening`,
+      date: effectiveDate,
+      type: "opening",
+      reference: loan.reference || "OPENING",
+      description: loan.notes || "Opening zero-interest loan liability (no cash inflow)",
+      advanceCents: 0,
+      repaymentCents: 0,
+      adjustmentCents: 0,
+      runningBalanceCents: running,
+      evidenceStatus: loan.openingPrincipalVerified ? "verified" : "unverified",
+    },
+  ];
+
+  for (const ev of loanEvents) {
+    let advanceCents = 0;
+    let repaymentCents = 0;
+    let adjustmentCents = 0;
+    if (ev.eventType === "advance") {
+      advanceCents = ev.amountCents;
+      totalAdvancesCents += ev.amountCents;
+      running += ev.amountCents;
+    } else if (ev.eventType === "repayment") {
+      repaymentCents = ev.amountCents;
+      totalRepaymentsCents += ev.amountCents;
+      running = Math.max(0, running - ev.amountCents);
+    } else if (ev.eventType === "agreed_adjustment") {
+      adjustmentCents = ev.amountCents;
+      totalAdjustmentsCents += ev.amountCents;
+      running += ev.amountCents;
+    }
+    rows.push({
+      id: ev.id,
+      date: ev.eventDate,
+      type: ev.eventType,
+      reference: ev.reference || "—",
+      description:
+        ev.note ||
+        (ev.eventType === "advance"
+          ? "Additional loan advance"
+          : ev.eventType === "repayment"
+            ? "Loan principal repayment"
+            : "Agreed principal adjustment"),
+      advanceCents,
+      repaymentCents,
+      adjustmentCents,
+      runningBalanceCents: running,
+      evidenceStatus: ev.evidenceStatus,
+    });
+  }
+
+  return {
+    loanId: loan.id,
+    lenderName: loan.lenderName,
+    effectiveDate,
+    reference: loan.reference || "",
+    openingPrincipalCents: loan.openingPrincipalCents,
+    openingPrincipalVerified: loan.openingPrincipalVerified,
+    totalAdvancesCents,
+    totalRepaymentsCents,
+    totalAdjustmentsCents,
+    closingBalanceCents: Math.max(
+      0,
+      loan.openingPrincipalCents + totalAdvancesCents - totalRepaymentsCents + totalAdjustmentsCents,
+    ),
+    rows,
+  };
+}
+
+export type RepaymentScheduleStatus = "paid" | "overdue" | "due" | "upcoming";
+
+export interface EvaluatedRepaymentScheduleItem {
+  schedule: LoanRepaymentSchedule;
+  paidAmountCents: number;
+  outstandingAmountCents: number;
+  status: RepaymentScheduleStatus;
+}
+
+/**
+ * Evaluate agreed repayment schedule installments against actual repayments posted to date.
+ */
+export function evaluateLoanRepaymentSchedule(
+  loan: LoanAccount,
+  events: LoanEvent[],
+  schedules: LoanRepaymentSchedule[],
+  asOfDate: string,
+): {
+  items: EvaluatedRepaymentScheduleItem[];
+  totalScheduledCents: number;
+  totalOutstandingScheduledCents: number;
+  totalOverdueCents: number;
+  overdueCount: number;
+} {
+  const loanBalance = calculateLoanBalanceCents(loan, events);
+  let remainingRepaymentCredit = loanBalance.totalRepaymentsCents;
+  let remainingPrincipalCap = loanBalance.remainingPrincipalCents;
+
+  const sorted = schedules
+    .filter((s) => s.loanId === loan.id)
+    .slice()
+    .sort((a, b) => a.expectedDate.localeCompare(b.expectedDate) || a.id.localeCompare(b.id));
+
+  const items: EvaluatedRepaymentScheduleItem[] = [];
+  let totalScheduledCents = 0;
+  let totalOutstandingScheduledCents = 0;
+  let totalOverdueCents = 0;
+  let overdueCount = 0;
+
+  for (const schedule of sorted) {
+    totalScheduledCents += schedule.expectedAmountCents;
+    const paidAmountCents = Math.min(schedule.expectedAmountCents, remainingRepaymentCredit);
+    remainingRepaymentCredit = Math.max(0, remainingRepaymentCredit - paidAmountCents);
+
+    const rawOutstanding = Math.max(0, schedule.expectedAmountCents - paidAmountCents);
+    const outstandingAmountCents = Math.min(rawOutstanding, remainingPrincipalCap);
+    remainingPrincipalCap = Math.max(0, remainingPrincipalCap - outstandingAmountCents);
+
+    let status: RepaymentScheduleStatus = "upcoming";
+    if (outstandingAmountCents === 0) {
+      status = "paid";
+    } else if (schedule.expectedDate < asOfDate) {
+      status = "overdue";
+      totalOverdueCents += outstandingAmountCents;
+      overdueCount += 1;
+    } else if (schedule.expectedDate === asOfDate) {
+      status = "due";
+    }
+
+    totalOutstandingScheduledCents += outstandingAmountCents;
+    items.push({ schedule, paidAmountCents, outstandingAmountCents, status });
+  }
+
+  return {
+    items,
+    totalScheduledCents,
+    totalOutstandingScheduledCents,
+    totalOverdueCents,
+    overdueCount,
+  };
+}
+
+/**
+ * Summarize total agreed contract value, customer payments received, and remaining customer receivables.
+ */
+export function summarizeContractReceivables(
+  jobs: Job[],
+  milestones: PaymentMilestone[],
+): {
+  totalContractValueCents: number;
+  totalMilestonesExpectedCents: number;
+  totalCustomerReceivedCents: number;
+  remainingContractReceivablesCents: number;
+  remainingMilestoneReceivablesCents: number;
+  byJob: Array<{
+    jobId: string;
+    jobName: string;
+    customerName: string;
+    contractReference: string;
+    contractValueCents: number;
+    receivedCents: number;
+    remainingReceivablesCents: number;
+  }>;
+} {
+  let totalContractValueCents = 0;
+  let totalMilestonesExpectedCents = 0;
+  let totalCustomerReceivedCents = 0;
+
+  const byJob = jobs.map((job) => {
+    const jobMilestones = milestones.filter((m) => m.jobId === job.id);
+    const receivedCents = jobMilestones.reduce((s, m) => s + m.receivedAmountCents, 0);
+    const expectedCents = jobMilestones.reduce((s, m) => s + m.expectedAmountCents, 0);
+    const effectiveContract = Math.max(job.contractValueCents, expectedCents);
+    totalContractValueCents += job.contractValueCents;
+    totalMilestonesExpectedCents += expectedCents;
+    totalCustomerReceivedCents += receivedCents;
+    return {
+      jobId: job.id,
+      jobName: job.name,
+      customerName: job.customerName,
+      contractReference: job.contractReference,
+      contractValueCents: job.contractValueCents,
+      receivedCents,
+      remainingReceivablesCents: Math.max(0, effectiveContract - receivedCents),
+    };
+  });
+
+  const baselineTotal = Math.max(totalContractValueCents, totalMilestonesExpectedCents);
+  return {
+    totalContractValueCents,
+    totalMilestonesExpectedCents,
+    totalCustomerReceivedCents,
+    remainingContractReceivablesCents: Math.max(0, baselineTotal - totalCustomerReceivedCents),
+    remainingMilestoneReceivablesCents: Math.max(0, totalMilestonesExpectedCents - totalCustomerReceivedCents),
+    byJob,
   };
 }
 

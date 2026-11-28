@@ -256,4 +256,19 @@ describe('Operational read and reviewer boundaries',()=>{
   expect((await asUser(OWNER,'SELECT * FROM sync_idempotency_keys')).rows).toEqual([]);
   expect((await asUser(ADMIN,'SELECT * FROM sync_idempotency_keys')).rows.length).toBeGreaterThan(0);
  });
+ it('supports manual opening loan liability, repayment schedules, opening lock, and duplicate payment guards',async()=>{
+  const loanId=crypto.randomUUID(),schedId=crypto.randomUUID();
+  await asUser(ADMIN,'SELECT worktrack_apply_changes($1,1,$2)',[B,JSON.stringify([
+   {table:'loans',before:null,after:{id:loanId,business_id:B,lender_name:'Manual Opening Lender',opening_principal_cents:25690000,opening_principal_verified:true,effective_date:'2026-12-01',reference:'OPEN-LOAN-1',notes:'Prior contract balance',interest_rate_percent:0,security_asset_note:'',repayment_terms_note:'Zero interest'}},
+   {table:'loan_repayment_schedules',before:null,after:{id:schedId,business_id:B,loan_id:loanId,expected_date:'2026-12-20',expected_amount_cents:10000000,reference:'SCH-1',note:'First tranche',created_by:ADMIN}},
+  ])]);
+  const ownerBundle=(await asUser(OWNER,"SELECT worktrack_read_bundle($1,ARRAY['loans','loan_repayment_schedules']) b",[B])).rows[0] as {b:{tables:{loans:Array<{id:string;opening_principal_cents:number}>;loan_repayment_schedules:Array<{id:string}>}}};
+  expect(ownerBundle.b.tables.loans.find(l=>l.id===loanId)?.opening_principal_cents).toBe(25690000);
+  expect(ownerBundle.b.tables.loan_repayment_schedules.find(s=>s.id===schedId)).toBeTruthy();
+  const supBundle=(await asUser(SUPERVISOR,"SELECT worktrack_read_bundle($1,ARRAY['loans','loan_repayment_schedules']) b",[B])).rows[0] as {b:{tables:{loans:unknown[];loan_repayment_schedules:unknown[]}}};
+  expect(supBundle.b.tables.loans).toEqual([]);
+  expect(supBundle.b.tables.loan_repayment_schedules).toEqual([]);
+  await expect(asUser(ADMIN,'UPDATE loans SET opening_principal_cents=1 WHERE id=$1',[loanId])).rejects.toThrow('Opening loan principal cannot be amended');
+  await expect(asUser(OWNER,"INSERT INTO loan_repayment_schedules(business_id,loan_id,expected_date,expected_amount_cents) VALUES($1,$2,'2026-12-30',5000)",[B,loanId])).rejects.toThrow(/row-level security/i);
+ });
 });

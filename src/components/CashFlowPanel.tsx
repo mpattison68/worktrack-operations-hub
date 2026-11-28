@@ -12,7 +12,12 @@ import {
   setupFinanceAccounts,
   saveForecastAssumption,
 } from "@/lib/data/increment-d-repository";
-import { calculateWeeklyCashForecast, computeCashSummary } from "@/lib/domain/finance-calc";
+import {
+  calculateWeeklyCashForecast,
+  computeCashSummary,
+  evaluateLoanRepaymentSchedule,
+  summarizeContractReceivables,
+} from "@/lib/domain/finance-calc";
 import { formatDateSA, formatZarCents, getMonSunWeekRange, parseZarToCents, todaySAST } from "@/lib/format";
 import { can } from "@/lib/permissions";
 import { Badge } from "@/components/ui/badge";
@@ -72,6 +77,10 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
   React.useEffect(()=>{const saved=finance.forecastAssumptions?.find(a=>a.jobId===forecastJob);setWeeklyCostRand(saved?String(saved.weeklyCashCostCents/100):'');setArrearsRand(saved?String(saved.existingArrearsCents/100):'0');setDelayWeeks(String(saved?.receiptDelayWeeks??0));setAssumptionNote(saved?.notes??'');},[finance.forecastAssumptions,forecastJob]);
   const saveForecast=useMutation({mutationFn:()=>saveForecastAssumption(session,{jobId:forecastJob,weeklyCashCostCents:parseZarToCents(weeklyCostRand)??0,existingArrearsCents:parseZarToCents(arrearsRand)??0,receiptDelayWeeks:Number(delayWeeks),notes:assumptionNote}),onSuccess:()=>{queryClient.invalidateQueries({queryKey:['finance']});toast.success('Forecast assumptions saved to server; actuals unchanged.');},onError:e=>toast.error(e.message)});
   const currentMonday = getMonSunWeekRange(todaySAST()).start;
+  const receivablesSummary = React.useMemo(
+    () => summarizeContractReceivables(jobs, finance.milestones),
+    [jobs, finance.milestones],
+  );
 
   const forecast = React.useMemo(() => {
     const weeklyCostCents = parseZarToCents(weeklyCostRand) ?? 0;
@@ -88,16 +97,47 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
           label: m.label,
         };
       });
+    const scheduledLoanRepayments = finance.loans.flatMap((loan) => {
+      const evaluated = evaluateLoanRepaymentSchedule(
+        loan,
+        finance.loanEvents,
+        finance.loanRepaymentSchedules ?? [],
+        todaySAST(),
+      );
+      return evaluated.items
+        .filter((item) => item.outstandingAmountCents > 0)
+        .map((item) => {
+          const diffDays = Math.round(
+            (new Date(item.schedule.expectedDate).getTime() - new Date(currentMonday).getTime()) / 86400000,
+          );
+          return {
+            weekIndex: Math.max(0, Math.floor(diffDays / 7)),
+            amountCents: item.outstandingAmountCents,
+            label: `${loan.lenderName}${item.schedule.reference ? ` (${item.schedule.reference})` : ""}${item.status === "overdue" ? " [OVERDUE]" : ""}`,
+          };
+        });
+    });
     return calculateWeeklyCashForecast({
       openingUnrestrictedCashCents: cashSummary.unrestrictedCashCents,
       weeklyCashCostCents: Math.max(0, weeklyCostCents),
       weeksCount: 8,
       startWeekDate: currentMonday,
       expectedReceipts,
+      scheduledLoanRepayments,
       existingArrearsCents: Math.max(0, arrearsCents),
       receiptDelayWeeks: Math.max(0, Number(delayWeeks) || 0),
     });
-  }, [cashSummary.unrestrictedCashCents, weeklyCostRand, arrearsRand, delayWeeks, finance.milestones, currentMonday]);
+  }, [
+    cashSummary.unrestrictedCashCents,
+    weeklyCostRand,
+    arrearsRand,
+    delayWeeks,
+    finance.milestones,
+    finance.loans,
+    finance.loanEvents,
+    finance.loanRepaymentSchedules,
+    currentMonday,
+  ]);
 
   const transferMutation = useMutation({
     mutationFn: () => {
@@ -399,6 +439,29 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
 
         {/* TAB 3: CUSTOMER PAYMENT MILESTONES */}
         <TabsContent value="milestones" className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Card>
+              <CardContent className="p-4">
+                <p className="text-xs text-muted-foreground">Total agreed contract value</p>
+                <p className="text-xl font-bold tabular-money">{formatZarCents(receivablesSummary.totalContractValueCents)}</p>
+                <p className="text-[11px] text-muted-foreground">Sum across visible customer contracts</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <p className="text-xs text-muted-foreground">Customer payments received</p>
+                <p className="text-xl font-bold tabular-money text-status-ok">{formatZarCents(receivablesSummary.totalCustomerReceivedCents)}</p>
+                <p className="text-[11px] text-muted-foreground">Posted to bank/cash &amp; revenue ledger</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <p className="text-xs text-muted-foreground">Remaining customer receivables</p>
+                <p className="text-xl font-bold tabular-money">{formatZarCents(receivablesSummary.remainingContractReceivablesCents)}</p>
+                <p className="text-[11px] text-muted-foreground">Outstanding balance not yet in cash</p>
+              </CardContent>
+            </Card>
+          </div>
           <FinanceMaintenancePanel session={session} finance={finance} jobs={jobs} kind="invoice"/>
           {finance.milestones.map((ms) => (
             <Card key={ms.id}>
