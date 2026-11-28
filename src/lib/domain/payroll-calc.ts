@@ -374,6 +374,7 @@ export function calculatePayrollWeek(params: {
     let publicHolidayPayCents = 0;
 
     let hasUnknownAttendance = false;
+    let hasUnverifiedAttendance = false;
     let hasUnconfirmedRate = false;
     const missingRateReasons = new Set<string>();
     const snapshotMap = new Map<string, PayRuleSnapshot>();
@@ -400,6 +401,11 @@ export function calculatePayrollWeek(params: {
 
       if (day.dayStatus === "unknown") {
         hasUnknownAttendance = true;
+      }
+      const effectiveVerificationState =
+        entry?.verificationState ?? (sharesCrew ? teamByDate.get(workDate)?.verificationState : undefined);
+      if (effectiveVerificationState === "reported") {
+        hasUnverifiedAttendance = true;
       }
 
       if (snap) {
@@ -523,6 +529,11 @@ export function calculatePayrollWeek(params: {
 
     if (hasUnknownAttendance) {
       blockingReasons.push(`${worker.fullName} has unknown attendance days in this week.`);
+    }
+    if (hasUnverifiedAttendance) {
+      blockingReasons.push(
+        `${worker.fullName} has supervisor-reported attendance awaiting management verification.`,
+      );
     }
     if (requireConfirmed && hasUnconfirmedRate) {
       blockingReasons.push(

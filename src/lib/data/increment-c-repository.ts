@@ -612,6 +612,7 @@ export async function listAttendanceForWeek(
       publicHolidayHours: Number(r["public_holiday_hours"]),
       isOverride: Boolean(r["is_override"]),
       overrideReason: (r["override_reason"] as string | null) ?? null,
+      verificationState: (r["verification_state"] as "reported" | "verified" | undefined) ?? "verified",
       updatedByEmail: String(r["updated_by_email"]),
       updatedAt: String(r["updated_at"]),
     });
@@ -631,6 +632,7 @@ export async function listAttendanceForWeek(
         publicHolidayHours: Number(r.public_holiday_hours),
         interruptionReason: (r.interruption_reason as InterruptionReason | null) ?? null,
         notes: r.notes ?? "",
+        verificationState: (r.verification_state as "reported" | "verified" | undefined) ?? "verified",
         updatedByEmail: r.updated_by_email,
         updatedAt: r.updated_at,
       })),
@@ -688,6 +690,7 @@ export async function upsertTeamDay(
   if (hrsErr) throw new Error(hrsErr);
 
   const now = new Date().toISOString();
+  const verificationState = session.role === "supervisor" ? "reported" : "verified";
 
   if (isSupabaseConfigured && supabase && session.mode === "supabase") {
     const { data, error } = await supabase
@@ -705,6 +708,7 @@ export async function upsertTeamDay(
           public_holiday_hours: input.publicHolidayHours,
           interruption_reason: input.interruptionReason,
           notes: input.notes.trim(),
+          verification_state: verificationState,
           updated_by_email: session.email,
           updated_at: now,
         },
@@ -726,6 +730,7 @@ export async function upsertTeamDay(
       publicHolidayHours: Number(data.public_holiday_hours),
       interruptionReason: (data.interruption_reason as InterruptionReason | null) ?? null,
       notes: data.notes ?? "",
+      verificationState: (data.verification_state as "reported" | "verified" | undefined) ?? verificationState,
       updatedByEmail: data.updated_by_email,
       updatedAt: data.updated_at,
     };
@@ -798,6 +803,7 @@ export async function upsertWorkerAttendanceOverride(
   if (hrsErr) throw new Error(hrsErr);
 
   const now = new Date().toISOString();
+  const verificationState = session.role === "supervisor" ? "reported" : "verified";
 
   if (isSupabaseConfigured && supabase && session.mode === "supabase") {
     const { data, error } = await supabase
@@ -816,6 +822,7 @@ export async function upsertWorkerAttendanceOverride(
           public_holiday_hours: input.publicHolidayHours,
           is_override: true,
           override_reason: input.overrideReason.trim() || null,
+          verification_state: verificationState,
           updated_by_email: session.email,
           updated_at: now,
         },
@@ -838,6 +845,7 @@ export async function upsertWorkerAttendanceOverride(
       publicHolidayHours: Number(data.public_holiday_hours),
       isOverride: Boolean(data.is_override),
       overrideReason: data.override_reason,
+      verificationState: (data.verification_state as "reported" | "verified" | undefined) ?? verificationState,
       updatedByEmail: data.updated_by_email,
       updatedAt: data.updated_at,
     };
@@ -861,6 +869,7 @@ export async function upsertWorkerAttendanceOverride(
       publicHolidayHours: input.publicHolidayHours,
       isOverride: true,
       overrideReason: input.overrideReason.trim() || null,
+      verificationState,
       updatedByEmail: session.email,
       updatedAt: now,
     });
@@ -881,12 +890,55 @@ export async function upsertWorkerAttendanceOverride(
     publicHolidayHours: input.publicHolidayHours,
     isOverride: true,
     overrideReason: input.overrideReason.trim() || null,
+    verificationState,
     updatedByEmail: session.email,
     updatedAt: now,
   };
   store.attendanceEntries.push(created);
   saveStore(store);
   return created;
+}
+
+export async function verifyAttendanceWeek(
+  session: AuthSession,
+  jobId: string,
+  weekStartDate: string,
+): Promise<{ verifiedTeamDays: number; verifiedEntries: number }> {
+  if (!can(session.role, "payroll.view")) {
+    throw new Error("Only management can verify attendance for payroll.");
+  }
+  const dates = getWeekDates(weekStartDate);
+  const weekEndDate = dates[6]!;
+  if (isSupabaseConfigured && supabase && session.mode === "supabase") {
+    const { data, error } = await supabase.rpc("worktrack_verify_attendance_week", {
+      p_business: session.businessId,
+      p_job: jobId,
+      p_week: weekStartDate,
+    });
+    if (error) throw new Error(error.message);
+    const res = (data ?? {}) as { verifiedTeamDays?: number; verifiedEntries?: number };
+    return {
+      verifiedTeamDays: Number(res.verifiedTeamDays ?? 0),
+      verifiedEntries: Number(res.verifiedEntries ?? 0),
+    };
+  }
+  const store = loadStore();
+  let verifiedTeamDays = 0;
+  let verifiedEntries = 0;
+  for (const t of store.teamDays) {
+    if (t.businessId === session.businessId && t.jobId === jobId && t.workDate >= weekStartDate && t.workDate <= weekEndDate && t.verificationState === "reported") {
+      t.verificationState = "verified";
+      verifiedTeamDays += 1;
+    }
+  }
+  for (const a of store.attendanceEntries) {
+    if (a.businessId === session.businessId && a.jobId === jobId && a.workDate >= weekStartDate && a.workDate <= weekEndDate && a.verificationState === "reported") {
+      a.verificationState = "verified";
+      verifiedEntries += 1;
+    }
+  }
+  saveStore(store);
+  return { verifiedTeamDays, verifiedEntries };
 }
 
 export async function resetWorkerDayToTeam(

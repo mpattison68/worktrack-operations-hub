@@ -19,7 +19,7 @@ import type {
 import { buildWorkerStatement, calculatePayrollWeek } from "@/lib/domain/payroll-calc";
 import { summarizeWorkerWagePayments } from "@/lib/domain/finance-calc";
 import type { WagePayment } from "@/lib/domain/increment-d-types";
-import { savePayrollRunDraftOrApprove } from "@/lib/data/increment-c-repository";
+import { savePayrollRunDraftOrApprove, verifyAttendanceWeek } from "@/lib/data/increment-c-repository";
 import { formatDateSA, formatZarCents, parseZarToCents } from "@/lib/format";
 import { can } from "@/lib/permissions";
 import { en } from "@/i18n/en";
@@ -128,6 +128,21 @@ export function PayrollPanel({
     [payrollRuns, jobId, weekStartDate],
   );
   const approvedRun = weekRuns.find((r) => r.status === "approved") ?? null;
+  const hasUnverifiedAttendance = useMemo(
+    () =>
+      teamDays.some((t) => t.verificationState === "reported") ||
+      attendanceEntries.some((a) => a.verificationState === "reported"),
+    [teamDays, attendanceEntries],
+  );
+
+  const verifyAttendanceMutation = useMutation({
+    mutationFn: () => verifyAttendanceWeek(session, jobId, weekStartDate),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["attendance", session.businessId, jobId, weekStartDate] });
+      toast.success("Attendance verified for payroll review.");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
 
   const saveRunMutation = useMutation({
     mutationFn: (approve: boolean) =>
@@ -340,6 +355,19 @@ export function PayrollPanel({
               <li key={i}>{r}</li>
             ))}
           </ul>
+          {hasUnverifiedAttendance && can(session.role, "payroll.view") && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="mt-3"
+              disabled={verifyAttendanceMutation.isPending}
+              onClick={() => verifyAttendanceMutation.mutate()}
+            >
+              <ShieldCheck className="mr-1.5 h-4 w-4" />
+              Verify supervisor attendance for week
+            </Button>
+          )}
         </div>
       )}
 

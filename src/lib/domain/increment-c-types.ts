@@ -80,6 +80,7 @@ export interface TeamDay {
   publicHolidayHours: number;
   interruptionReason: InterruptionReason | null;
   notes: string;
+  verificationState?: "reported" | "verified";
   updatedByEmail: string;
   updatedAt: string;
 }
@@ -99,6 +100,7 @@ export interface AttendanceEntry {
   publicHolidayHours: number;
   isOverride: boolean;
   overrideReason: string | null;
+  verificationState?: "reported" | "verified";
   updatedByEmail: string;
   updatedAt: string;
 }

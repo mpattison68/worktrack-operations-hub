@@ -190,9 +190,9 @@ describe('Atomic production approval regression tests',()=>{
   await expect(asUser(ADMIN,SAVE_PAYROLL,args)).rejects.toThrow('inputs changed');
  });
  it('unknown attendance cannot be approved through the direct RPC',async()=>{
-  await asUser(ADMIN,"UPDATE team_days SET day_status='unknown' WHERE job_id=$1 AND work_date='2026-11-23'",[JOB]);
+  await asUser(ADMIN,"UPDATE team_days SET day_status='unknown',normal_hours=0 WHERE job_id=$1 AND work_date='2026-11-23'",[JOB]);
   await expect(asUser(ADMIN,SAVE_PAYROLL,await payrollArgs(2,true))).rejects.toThrow('Unknown attendance');
-  await asUser(ADMIN,"UPDATE team_days SET day_status='worked' WHERE job_id=$1 AND work_date='2026-11-23'",[JOB]);
+  await asUser(ADMIN,"UPDATE team_days SET day_status='worked',normal_hours=9 WHERE job_id=$1 AND work_date='2026-11-23'",[JOB]);
  });
  it('balanced arbitrary journal sources are rejected',async()=>{
   const id=crypto.randomUUID();await expect(asUser(OWNER,"INSERT INTO journal_entries(id,business_id,entry_date,source_type,source_id) VALUES($1,$2,'2026-11-28','invented_source',$1)",[id,B])).rejects.toThrow('Unsupported financial');
@@ -228,8 +228,28 @@ describe('Operational read and reviewer boundaries',()=>{
   await expect(asUser(SUPERVISOR,"SELECT worktrack_operational_read($1,'jobs')",[OTHER])).rejects.toThrow('Active business');
  });
  it('a field caller cannot self-verify progress or spoof its actor',async()=>{
-  const result=await asUser(SUPERVISOR,"INSERT INTO progress_entries(business_id,job_id,section_id,verge_side,activity,reported_date,start_chainage_meters,end_chainage_meters,stage_status,verification_state,submitted_by_email) VALUES($1,$2,'test-section','left','cutting','2026-11-28',0,100,'complete','verified','forged') RETURNING verification_state,submitted_by_email",[B,JOB]);
+  const result=await asUser(SUPERVISOR,"INSERT INTO progress_entries(business_id,job_id,section_id,verge_side,activity,reported_date,start_chainage_meters,end_chainage_meters,stage_status,verification_state,submitted_by_email) VALUES($1,$2,'test-section','left','cutting','2026-11-28',0,100,'complete','reported','forged') RETURNING verification_state,submitted_by_email",[B,JOB]);
   expect(result.rows[0]).toEqual({verification_state:'reported',submitted_by_email:'supervisor@isolated.invalid'});
+  const forced=await asUser(SUPERVISOR,"INSERT INTO progress_entries(business_id,job_id,section_id,verge_side,activity,reported_date,start_chainage_meters,end_chainage_meters,stage_status,verification_state,submitted_by_email) VALUES($1,$2,'test-section','right','cutting','2026-11-28',0,100,'complete','verified','forged') RETURNING verification_state,submitted_by_email",[B,JOB]);
+  expect(forced.rows[0]).toEqual({verification_state:'reported',submitted_by_email:'supervisor@isolated.invalid'});
+ });
+ it('supervisor attendance requires management verification and cannot alter approved payroll weeks',async()=>{
+  await expect(asUser(SUPERVISOR,"INSERT INTO attendance_entries(business_id,job_id,worker_id,work_date,day_status,normal_hours,updated_by_email) VALUES($1,$2,$3,'2026-11-23','worked',24,'forged')",[B,JOB,WORKER])).rejects.toThrow('Approved payroll week');
+  const reported=await asUser(SUPERVISOR,"INSERT INTO attendance_entries(business_id,job_id,worker_id,work_date,day_status,normal_hours,verification_state,updated_by_email) VALUES($1,$2,$3,'2026-11-30','worked',10,'verified','forged') RETURNING verification_state,updated_by_email",[B,JOB,WORKER]);
+  expect(reported.rows[0]).toEqual({verification_state:'reported',updated_by_email:'supervisor@isolated.invalid'});
+  await asUser(ADMIN,"INSERT INTO team_days(business_id,job_id,work_date,day_status,normal_hours,updated_by_email) SELECT $1,$2,d::date,'no_work',0,'admin@isolated.invalid' FROM generate_series('2026-12-01'::date,'2026-12-06'::date,interval '1 day') d",[B,JOB]);
+  expect((await asUser(ADMIN,"SELECT worktrack_payroll_ready($1,$2,'2026-11-30') ready",[B,JOB])).rows[0]).toEqual({ready:false});
+  await expect(asUser(SUPERVISOR,"SELECT worktrack_verify_attendance_week($1,$2,'2026-11-30')",[B,JOB])).rejects.toThrow('Only management');
+  const verified=await asUser(ADMIN,"SELECT worktrack_verify_attendance_week($1,$2,'2026-11-30') result",[B,JOB]);
+  expect((verified.rows[0] as {result:{verifiedEntries:number}}).result.verifiedEntries).toBe(1);
+  expect((await asUser(ADMIN,"SELECT worktrack_payroll_ready($1,$2,'2026-11-30') ready",[B,JOB])).rows[0]).toEqual({ready:true});
+  const upd=await asUser(SUPERVISOR,"UPDATE attendance_entries SET normal_hours=24 WHERE worker_id=$1 AND work_date='2026-11-30' RETURNING normal_hours",[WORKER]);
+  expect(upd.rows).toEqual([]);
+  const del=await asUser(SUPERVISOR,"DELETE FROM attendance_entries WHERE worker_id=$1 AND work_date='2026-11-30' RETURNING id",[WORKER]);
+  expect(del.rows).toEqual([]);
+  expect((await asUser(ADMIN,"SELECT normal_hours::int hours FROM attendance_entries WHERE worker_id=$1 AND work_date='2026-11-30'",[WORKER])).rows[0]).toEqual({hours:10});
+  await expect(asUser(SUPERVISOR,"INSERT INTO attendance_entries(business_id,job_id,worker_id,work_date,day_status,normal_hours,verification_state,updated_by_email) VALUES($1,$2,$3,'2026-12-01','no_work',8,'reported','forged')",[B,JOB,WORKER])).rejects.toThrow('Non-working');
+  await expect(asUser(SUPERVISOR,"INSERT INTO attendance_entries(business_id,job_id,worker_id,work_date,day_status,normal_hours,verification_state,updated_by_email) VALUES($1,$2,$3,'2026-10-01','worked',8,'reported','forged')",[B,JOB,WORKER])).rejects.toThrow('not assigned');
  });
  it('replay receipts are private to the capturing user',async()=>{
   expect((await asUser(SUPERVISOR,'SELECT * FROM sync_idempotency_keys')).rows).toEqual([]);
