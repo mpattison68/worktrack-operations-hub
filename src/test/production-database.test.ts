@@ -258,8 +258,9 @@ describe('Operational read and reviewer boundaries',()=>{
  });
  it('supports manual opening loan liability, repayment schedules, opening lock, and duplicate payment guards',async()=>{
   const loanId=crypto.randomUUID(),schedId=crypto.randomUUID();
+  const opening=await securityOpeningBatch(loanId,25690000);
   await asUser(ADMIN,'SELECT worktrack_apply_changes($1,1,$2)',[B,JSON.stringify([
-   {table:'loans',before:null,after:{id:loanId,business_id:B,lender_name:'Manual Opening Lender',opening_principal_cents:25690000,opening_principal_verified:true,effective_date:'2026-12-01',reference:'OPEN-LOAN-1',notes:'Prior contract balance',interest_rate_percent:0,security_asset_note:'',repayment_terms_note:'Zero interest'}},
+   ...opening,
    {table:'loan_repayment_schedules',before:null,after:{id:schedId,business_id:B,loan_id:loanId,expected_date:'2026-12-20',expected_amount_cents:10000000,reference:'SCH-1',note:'First tranche',created_by:ADMIN}},
   ])]);
   const ownerBundle=(await asUser(OWNER,"SELECT worktrack_read_bundle($1,ARRAY['loans','loan_repayment_schedules']) b",[B])).rows[0] as {b:{tables:{loans:Array<{id:string;opening_principal_cents:number}>;loan_repayment_schedules:Array<{id:string}>}}};
@@ -273,7 +274,7 @@ describe('Operational read and reviewer boundaries',()=>{
  });
  it('enforces balanced non-cash loan_opening, Admin-only financial reversals, Owner repayment/receipt RLS, and offline interruption idempotency',async()=>{
   const acctRows=(await asUser(ADMIN,'SELECT id,account_type FROM accounts WHERE business_id=$1',[B])).rows as Array<{id:string;account_type:string}>;
-  const accByType=(t:string)=>acctRows.find(a=>a.account_type===t)!.id;
+  const accByType=(t:string)=>{const account=acctRows.find(a=>a.account_type===t);if(!account)throw new Error('Missing account');return account.id;};
   const loanId=crypto.randomUUID(),openJeId=crypto.randomUUID(),msId=crypto.randomUUID(),rcptId=crypto.randomUUID(),rcptJeId=crypto.randomUUID();
   const repId=crypto.randomUUID(),repJeId=crypto.randomUUID(),revId=crypto.randomUUID(),revJeId=crypto.randomUUID();
 
@@ -320,5 +321,156 @@ describe('Operational read and reviewer boundaries',()=>{
   expect(second.res.entityId).toBe(first.res.entityId);
   const intCount=(await asUser(ADMIN,"SELECT count(*)::int c FROM interruptions WHERE business_id=$1 AND comment='Heavy storm'",[B])).rows[0] as {c:number};
   expect(intCount.c).toBe(1);
+ });
+});
+
+type SecurityChange={table:string;before:Record<string,unknown>|null;after:Record<string,unknown>};
+async function securityAccount(type:string):Promise<string>{
+ const row=(await asUser(ADMIN,'SELECT id FROM accounts WHERE business_id=$1 AND account_type::text=$2',[B,type])).rows[0] as {id:string}|undefined;
+ if(!row)throw new Error('Missing security account '+type);return row.id;
+}
+async function securityOpeningBatch(loanId:string,amount=100000):Promise<SecurityChange[]>{
+ const journalId=crypto.randomUUID();
+ return [
+  {table:'loans',before:null,after:{id:loanId,business_id:B,lender_name:'Security fixture',opening_principal_cents:amount,opening_principal_verified:true,interest_rate_percent:0,effective_date:'2026-12-01'}},
+  {table:'journal_entries',before:null,after:{id:journalId,business_id:B,entry_date:'2026-12-01',source_type:'loan_opening',source_id:loanId,evidence_status:'verified'}},
+  {table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:journalId,account_id:await securityAccount('owner_equity'),debit_cents:amount,credit_cents:0}},
+  {table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:journalId,account_id:await securityAccount('loan_liability'),debit_cents:0,credit_cents:amount}},
+ ];
+}
+async function securityRepaymentBatch(loanId:string,accountId:string,extra:Record<string,unknown>={}):Promise<SecurityChange[]>{
+ const id=crypto.randomUUID(),journalId=crypto.randomUUID();
+ return [
+  {table:'journal_entries',before:null,after:{id:journalId,business_id:B,entry_date:'2026-12-02',source_type:'loan_repayment',source_id:id,evidence_status:'reported'}},
+  {table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:journalId,account_id:await securityAccount('loan_liability'),debit_cents:10000,credit_cents:0}},
+  {table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:journalId,account_id:accountId,debit_cents:0,credit_cents:10000}},
+  {table:'loan_events',before:null,after:{id,business_id:B,loan_id:loanId,event_date:'2026-12-02',event_type:'repayment',amount_cents:10000,account_id:accountId,journal_entry_id:journalId,evidence_status:'reported',used_restricted_funding:false,restricted_eligibility_approved:false,...extra}},
+ ];
+}
+async function securityApply(user:string,changes:SecurityChange[]){return asUser(user,'SELECT worktrack_apply_changes($1,1,$2)',[B,JSON.stringify(changes)]);}
+async function securityReversalBatch(type:string,targetId:string,originalId:string):Promise<SecurityChange[]>{
+ const id=crypto.randomUUID();
+ const lines=(await asUser(ADMIN,'SELECT account_id,debit_cents::int debit_cents,credit_cents::int credit_cents FROM journal_lines WHERE journal_entry_id=$1',[originalId])).rows as Array<{account_id:string;debit_cents:number;credit_cents:number}>;
+ return [
+  {table:'journal_entries',before:null,after:{id,business_id:B,entry_date:'2026-12-03',source_type:'reversal',source_id:originalId,reversal_of_id:originalId,evidence_status:'verified'}},
+  ...lines.map(line=>({table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:id,account_id:line.account_id,debit_cents:line.credit_cents,credit_cents:line.debit_cents}})),
+  {table:'financial_reversals',before:null,after:{id:crypto.randomUUID(),business_id:B,target_type:type,target_id:targetId,original_journal_entry_id:originalId,reversal_journal_entry_id:id,reason:'Security regression correction'}},
+ ];
+}
+
+describe('Security review financial database regressions',()=>{
+ let loanId:string,bank:string;
+ beforeAll(async()=>{loanId=crypto.randomUUID();bank=await securityAccount('bank');await securityApply(ADMIN,await securityOpeningBatch(loanId));});
+ it('rejects a positive opening liability without its non-cash journal and rolls back the loan',async()=>{
+  const id=crypto.randomUUID();const batch=await securityOpeningBatch(id);
+  await expect(securityApply(ADMIN,batch.slice(0,1))).rejects.toThrow('Opening loan requires exactly one');
+  expect((await asUser(ADMIN,'SELECT id FROM loans WHERE id=$1',[id])).rows).toEqual([]);
+ });
+ it('only Admin may post opening liabilities even against an existing loan',async()=>{
+  const batch=await securityOpeningBatch(loanId);batch.shift();
+  await expect(securityApply(OWNER,batch)).rejects.toThrow('Only Admin can post opening');
+ });
+ it('duplicate opening journals are rejected without inflating the ledger',async()=>{
+  const batch=await securityOpeningBatch(loanId);batch.shift();
+  await expect(securityApply(ADMIN,batch)).rejects.toThrow(/duplicate key/i);
+  expect((await asUser(ADMIN,"SELECT count(*)::int n FROM journal_entries WHERE source_type='loan_opening' AND source_id=$1",[loanId])).rows[0]).toEqual({n:1});
+ });
+ it('Owner cannot spoof restricted funding flags to repay debt',async()=>{
+  const id=crypto.randomUUID();await asUser(ADMIN,"INSERT INTO accounts(id,business_id,code,name,account_type,is_cash_account,is_restricted) VALUES($1,$2,'SEC-RESTRICTED','Restricted security fixture','restricted_funding',true,true)",[id,B]);
+  await expect(securityApply(OWNER,await securityRepaymentBatch(loanId,id))).rejects.toThrow('Restricted debt repayment needs authorized');
+  await expect(securityApply(ADMIN,await securityRepaymentBatch(loanId,id))).rejects.toThrow('Restricted debt repayment needs authorized');
+  await securityApply(ADMIN,await securityRepaymentBatch(loanId,id,{restricted_eligibility_approved:true}));
+  expect((await asUser(ADMIN,'SELECT used_restricted_funding FROM loan_events WHERE account_id=$1',[id])).rows[0]).toEqual({used_restricted_funding:true});
+ });
+ it('Owner cannot self-verify a financial journal while its repayment stays reported',async()=>{
+  const batch=await securityRepaymentBatch(loanId,bank);const header=batch[0];if(!header)throw new Error('Missing journal');header.after['evidence_status']='verified';
+  await expect(securityApply(OWNER,batch)).rejects.toThrow('Only Admin verifies financial evidence');
+ });
+ it('Admin confirmation must update source and journal together',async()=>{
+  const batch=await securityRepaymentBatch(loanId,bank);await securityApply(OWNER,batch);
+  const journal=batch[0]?.after['id'];if(typeof journal!=='string')throw new Error('Missing journal');
+  await expect(asUser(ADMIN,"UPDATE journal_entries SET evidence_status='verified' WHERE id=$1",[journal])).rejects.toThrow('Financial source and journal verification must agree');
+  await asUser(ADMIN,"WITH s AS (UPDATE loan_events SET evidence_status='verified' WHERE journal_entry_id=$1) UPDATE journal_entries SET evidence_status='verified' WHERE id=$1",[journal]);
+  expect((await asUser(ADMIN,'SELECT evidence_status FROM journal_entries WHERE id=$1',[journal])).rows[0]).toEqual({evidence_status:'verified'});
+ });
+ it('repayment allocations cannot point to a different loan schedule or be reassigned later',async()=>{
+  const otherLoan=crypto.randomUUID(),schedule=crypto.randomUUID();await securityApply(ADMIN,await securityOpeningBatch(otherLoan));
+  await asUser(ADMIN,"INSERT INTO loan_repayment_schedules(id,business_id,loan_id,expected_date,expected_amount_cents) VALUES($1,$2,$3,'2026-12-20',10000)",[schedule,B,otherLoan]);
+  await expect(securityApply(OWNER,await securityRepaymentBatch(loanId,bank,{schedule_id:schedule}))).rejects.toThrow('Schedule instalment must belong to repayment loan');
+  await securityApply(OWNER,await securityRepaymentBatch(otherLoan,bank,{schedule_id:schedule}));
+  await expect(asUser(ADMIN,'UPDATE loan_repayment_schedules SET loan_id=$1 WHERE id=$2',[loanId,schedule])).rejects.toThrow(/foreign key/i);
+ });
+ it('reversal markers must reference an existing target and its original and inverse journals',async()=>{
+  await expect(asUser(ADMIN,"INSERT INTO financial_reversals(business_id,target_type,target_id,reason) VALUES($1,'loan_repayment',$2,'Forged reversal')",[B,crypto.randomUUID()])).rejects.toThrow('Reversal target must exist');
+  const batch=await securityRepaymentBatch(loanId,bank);await securityApply(OWNER,batch);const event=batch[3]?.after['id'];if(typeof event!=='string')throw new Error('Missing event');
+  await expect(asUser(ADMIN,"INSERT INTO financial_reversals(business_id,target_type,target_id,reason) VALUES($1,'loan_repayment',$2,'Missing cash reversal')",[B,event])).rejects.toThrow('Reversal must identify target posting');
+ });
+ it('loan repayments must debit the liability rather than operating expenses',async()=>{
+  const batch=await securityRepaymentBatch(loanId,bank);const line=batch[1];if(!line)throw new Error('Missing line');line.after['account_id']=await securityAccount('operating_expenses');
+  await expect(securityApply(OWNER,batch)).rejects.toThrow('Repayment must debit loan liability');
+ });
+ it('an exact inverse cannot be attached to the wrong repayment target',async()=>{
+  const a=await securityRepaymentBatch(loanId,bank),b=await securityRepaymentBatch(loanId,bank);await securityApply(OWNER,a);await securityApply(OWNER,b);
+  const original=a[0]?.after['id'],correct=a[3]?.after['id'],wrong=b[3]?.after['id'];
+  if(typeof original!=='string'||typeof correct!=='string'||typeof wrong!=='string')throw new Error('Missing fixture IDs');
+  await expect(securityApply(ADMIN,await securityReversalBatch('loan_repayment',wrong,original))).rejects.toThrow('Reversal must identify target posting');
+  expect((await asUser(ADMIN,'SELECT id FROM financial_reversals WHERE target_id=$1',[wrong])).rows).toEqual([]);
+  await securityApply(ADMIN,await securityReversalBatch('loan_repayment',correct,original));
+  expect((await asUser(ADMIN,'SELECT count(*)::int n FROM financial_reversals WHERE target_id=$1',[correct])).rows[0]).toEqual({n:1});
+ });
+ it('advances cannot be reversed after principal has been spent on repayments',async()=>{
+  const id=crypto.randomUUID();await securityApply(ADMIN,[{table:'loans',before:null,after:{id,business_id:B,lender_name:'Advance security fixture',opening_principal_cents:0}}]);
+  const advance=await securityRepaymentBatch(id,bank);const header=advance[0],debit=advance[1],credit=advance[2],event=advance[3];
+  if(!header||!debit||!credit||!event)throw new Error('Missing advance fixture');
+  header.after['source_type']='loan_advance';header.after['evidence_status']='verified';event.after['event_type']='advance';event.after['evidence_status']='verified';
+  debit.after['account_id']=bank;credit.after['account_id']=await securityAccount('loan_liability');await securityApply(ADMIN,advance);
+  await securityApply(OWNER,await securityRepaymentBatch(id,bank));
+  const original=header.after['id'],target=event.after['id'];if(typeof original!=='string'||typeof target!=='string')throw new Error('Missing advance IDs');
+  await expect(securityApply(ADMIN,await securityReversalBatch('loan_advance',target,original))).rejects.toThrow('Reversal would overdraw loan principal');
+  expect((await asUser(ADMIN,'SELECT id FROM financial_reversals WHERE target_id=$1',[target])).rows).toEqual([]);
+ });
+ it('all seven repository reversal types preserve exact database cash and loan reconciliation',async()=>{
+  const repo=await import('@/lib/data/increment-d-repository');
+  const calc=await import('@/lib/domain/finance-calc');
+  const admin={userId:ADMIN,email:'admin@isolated.invalid',fullName:'Admin',businessId:B,businessName:'Isolated test business',role:'admin' as const,assignedJobIds:[],mode:'supabase' as const};
+  const before=await repo.listFinanceBundle(admin);
+  const cashBefore=calc.computeCashSummary(before.accounts,before.journalEntries).unrestrictedCashCents;
+  const loan=await repo.createLoanAccount(admin,{lenderName:'Seven-type security fixture',openingPrincipalCents:100000,effectiveDate:'2026-12-01',reference:'SEC-OPEN-ALL'});
+  const reverse=async(targetType:import('@/lib/domain/increment-d-types').FinancialReversalTargetType,targetId:string)=>repo.reverseFinancialTransaction(admin,{targetType,targetId,reason:'Isolated security regression'});
+  const invoice=await repo.createCustomerInvoice(admin,{jobId:JOB,label:'Security claim',reference:'SEC-INV',expectedDate:'2026-12-02',amountCents:10000});
+  await repo.recordCustomerMilestoneReceipt(admin,{milestoneId:invoice.id,receivedDate:'2026-12-02',receivedAmountCents:10000,accountId:bank,reference:'SEC-RECEIPT'});
+  const receipt=(await repo.listFinanceBundle(admin)).customerReceipts?.find(r=>r.milestoneId===invoice.id);if(!receipt)throw new Error('Missing receipt');
+  await reverse('customer_receipt',receipt.id);
+  const wage=await repo.recordBulkWagePayment(admin,{jobId:JOB,paymentDate:'2026-12-02',accountId:bank,method:'bank_transfer',reference:'SEC-WAGE',evidenceNote:'Isolated check',workerAmounts:[{workerId:WORKER,amountCents:1000}],approvedRuns:[]});
+  await reverse('wage_payment',wage.id);
+  const expense=await repo.recordExpense(admin,{jobId:JOB,expenseDate:'2026-12-02',category:'fuel',classification:'operating',amountCents:10000,paidAmountCents:5000,paymentStatus:'partially_paid',accountId:bank,method:'bank_transfer',supplierName:'Synthetic supplier',description:'Security fixture',reference:'SEC-EXP',fuelLitres:null,vehicleOrMachine:'',odometerKm:null,receiptAttachment:null,missingReceiptReason:'Synthetic fixture'});
+  await repo.settleExpense(admin,{expenseId:expense.id,amountCents:5000,accountId:bank,paymentDate:'2026-12-02',reference:'SEC-SETTLE'});
+  const settlement=(await repo.listFinanceBundle(admin)).expenseSettlements?.find(s=>s.expenseId===expense.id);if(!settlement)throw new Error('Missing settlement');
+  await reverse('expense_settlement',settlement.id);await reverse('expense',expense.id);
+  const advance=await repo.recordLoanEvent(admin,{loanId:loan.id,eventDate:'2026-12-02',eventType:'advance',amountCents:10000,accountId:bank,restrictedEligibilityApproved:false,reference:'SEC-ADV',note:'Synthetic'});
+  const repayment=await repo.recordLoanEvent(admin,{loanId:loan.id,eventDate:'2026-12-02',eventType:'repayment',amountCents:10000,accountId:bank,restrictedEligibilityApproved:false,reference:'SEC-REPAY',note:'Synthetic'});
+  await reverse('loan_repayment',repayment.id);await reverse('loan_advance',advance.id);
+  // Owner starts the lender-transfer party record; Admin completes the approved posting.
+  const transfer=crypto.randomUUID();
+  await asUser(OWNER,"INSERT INTO transfers(id,business_id,transfer_date,to_account_id,amount_cents,shared_reference,transfer_kind,status,confirmed_by_owner) VALUES($1,$2,'2026-12-02',$3,10000,'SEC-LENDER-TRANSFER','lender_advance','pending_match',$4)",[transfer,B,bank,JSON.stringify({userId:OWNER,note:'Owner side',recordedAt:'2026-12-02T00:00:00Z'})]);
+  await repo.recordOrMatchTransfer(admin,{transferDate:'2026-12-02',fromAccountId:null,toAccountId:bank,amountCents:10000,sharedReference:'SEC-LENDER-TRANSFER',description:'Synthetic lender transfer',transferKind:'lender_advance',note:'Admin side'});
+  const bundle=await repo.listFinanceBundle(admin),matched=bundle.transfers.find(t=>t.id===transfer),linked=bundle.loanEvents.find(e=>e.journalEntryId===matched?.journalEntryId);
+  if(!matched||!linked)throw new Error('Missing linked lender transfer');
+  await reverse('loan_advance',linked.id);
+  const after=await repo.listFinanceBundle(admin);
+  expect(after.financialReversals?.some(r=>r.targetType==='transfer'&&r.targetId===transfer)).toBe(true);
+  expect(new Set(after.financialReversals?.map(r=>r.targetType)).size).toBe(7);
+  expect(calc.computeCashSummary(after.accounts,after.journalEntries).unrestrictedCashCents).toBe(cashBefore);
+  expect(calc.reconcileLoanLedgerCents(after.loans,after.loanEvents,after.accounts,after.journalEntries,after.financialReversals).varianceCents).toBe(0);
+ });
+ it('Admin opening verification updates the liability and its journal atomically',async()=>{
+  const repo=await import('@/lib/data/increment-d-repository');
+  const admin={userId:ADMIN,email:'admin@isolated.invalid',fullName:'Admin',businessId:B,businessName:'Isolated test business',role:'admin' as const,assignedJobIds:[],mode:'supabase' as const};
+  const loan=await repo.createLoanAccount(admin,{lenderName:'Unverified security opening',openingPrincipalCents:10000,effectiveDate:'2026-12-01',reference:'SEC-OPEN-VERIFY',openingPrincipalVerified:false});
+  await expect(asUser(ADMIN,'UPDATE loans SET opening_principal_verified=true WHERE id=$1',[loan.id])).rejects.toThrow('Opening loan ledger reconciliation failed');
+  await repo.setLoanOpeningVerified(admin,loan.id,true);
+  const bundle=await repo.listFinanceBundle(admin);
+  expect(bundle.loans.find(l=>l.id===loan.id)?.openingPrincipalVerified).toBe(true);
+  expect(bundle.journalEntries.find(j=>j.sourceType==='loan_opening'&&j.sourceId===loan.id)?.evidenceStatus).toBe('verified');
  });
 });

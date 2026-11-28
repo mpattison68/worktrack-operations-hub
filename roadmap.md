@@ -37,4 +37,13 @@
 ## Explicit implementation limits
 - Scheduled SMTP email digests remain intentionally deferred; authentication password recovery (`/reset-password`) is implemented and requires isolated-VM SMTP verification.
 - Completed in latest release: general financial transaction reversals (all 7 types), balanced non-cash opening loan reconciliation, Owner customer-receipt & loan-repayment workflows with Admin confirmation and instalment allocation, and offline field operations (bulk crew attendance, exceptions, exception reset, overtime, interruptions/rain/vehicle breakdown/downtime, progress/comments).
-- Fresh deep security scan against the newly committed code is queued as the immediate next step once this commit is saved.
+- Fresh deep security scan completed against `446a6679f9cf34b9fdcc1c6119ce25f6a7577c04`: no findings; real-service security verification remains an isolated-environment gate.
+
+## Security review before isolated acceptance testing
+- [x] Run quick and deep scans against the requested saved application commit; record backend and stale dependency-scan limitations
+- [x] Correct financial control gaps in forward migration 0024 and paired repository writes; add 13 database regressions including all seven reversal types
+- [x] Rerun complete automated suite: 14 files / 101 tests passed; shell syntax and Python compilation passed; automatic build OK
+- [x] Run one separate two-session local PostgreSQL 17.12 direct-write concurrency/rollback drill; no production connection
+- [x] Update release report, 24-migration acceptance checklist and cautious existing-VM upgrade procedure with limitations
+- [x] Commit corrected release and report exact final SHA in handover
+- [ ] Fresh deep scan of corrective release before production approval (requested scan covered original 446a667; corrective changes require a subsequent saved-snapshot scan)

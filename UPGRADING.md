@@ -2,6 +2,8 @@
 
 **Run only after the isolated acceptance checklist passes. This is not authorization to deploy immediately. No reset or import is part of these steps.**
 
+Security-review baseline: application commit `446a6679f9cf34b9fdcc1c6119ce25f6a7577c04` completed a deep scan with no findings on 28 November 2026. The focused review subsequently adds **0024** for financial security controls: **24 migrations total**, no new environment variables or proxy changes. Record the final corrected release commit separately; it has passed regression/concurrency checks but needs a fresh deep scan before production approval. Nothing here authorizes live deployment.
+
 Known installation: `/srv/worktrack/app`; backend `/srv/worktrack/supabase/docker`; app `worktrack.clickcraft.tech` on localhost 3080; API `worktrack-api.clickcraft.tech` through Envoy on localhost 8400; PostgreSQL 17.6/Supavisor; Nginx Proxy Manager and external `npm-proxy` network. Keep the existing Compose project name and all actual overlays. Do not replace the backend or proxy.
 
 ## 1. Preserve the actual installation
@@ -101,7 +103,7 @@ bash deploy/scripts/baseline-existing-migrations.sh
 unset WORKTRACK_BASELINE_CONFIRM
 ```
 
-This records only the original eight filenames, **without executing their SQL**. It does not mark 0009–0023 applied. `migrate.sh` now refuses an existing schema lacking that baseline rather than replaying it.
+This records only the original eight filenames, **without executing their SQL**. It does not mark 0009–0024 applied. `migrate.sh` now refuses an existing schema lacking that baseline rather than replaying it.
 
 ## 6. Take the new-format backup, build, migrate and start
 
@@ -115,7 +117,9 @@ bash deploy/scripts/migrate.sh
 curl -fsS http://127.0.0.1:3080/auth >/dev/null
 ```
 
-There are **23 migration files**: eight original (`202611270001`–`202611270008`) and fifteen forward upgrades (`202611280009`–`202611280023`). No new server-side environment variables or Nginx Proxy Manager / Envoy reverse proxy changes are required for `0021`–`0023`. Check `public.schema_migrations_worktrack` (expect 23 rows) and run `deploy/scripts/verify-restore-drill.sh` on the isolated copy before promoting. Validate any `NOT VALID` constraints only after investigating legacy inconsistencies on the restored environment; never repair history by fabricating transactions.
+There are **24 migration files**: eight original (`202611270001`–`202611270008`) and sixteen forward upgrades (`202611280009`–`202611280024`). No new server-side environment variables or Nginx Proxy Manager / Envoy reverse proxy changes are required for `0021`–`0024`. Check `public.schema_migrations_worktrack` (expect 24 rows) and run the restore verifier on the isolated copy before promoting.
+
+Migration **0024** serializes direct financial writes and enforces opening, verification, schedule and reversal integrity. It deliberately stops on inconsistent legacy openings, reversal targets/postings, restricted flags, evidence states or schedule ownership. It does **not** automatically create postings, mark evidence verified, reverse transactions or delete history. Preserve the failure and inspect the restored copy; obtain an independently verified correction before retrying. Do not disable its triggers or modify migration history to force success. Confirm the corrected release's regression tests and a fresh deep scan before production promotion. Validate any earlier `NOT VALID` constraints only after investigating legacy inconsistencies; never fabricate history.
 
 Remove WorkTrack maintenance only after Admin/Owner/Supervisor, financial read-back, evidence and offline smoke checks pass. Do not execute `reset-business.sh` or `import-workers.sh` here.
 

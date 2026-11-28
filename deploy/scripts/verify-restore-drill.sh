@@ -9,8 +9,8 @@ set -euo pipefail
 echo "1. Checking WorkTrack migration ledger..."
 MIGRATION_COUNT="$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM public.schema_migrations_worktrack;")"
 echo "   Applied migrations: ${MIGRATION_COUNT}"
-if [[ "${MIGRATION_COUNT:-0}" -lt 23 ]]; then
-  echo "FAIL: Expected at least 23 WorkTrack migrations (Increments A-F + production-readiness upgrades)." >&2
+if [[ "${MIGRATION_COUNT:-0}" -lt 24 ]]; then
+  echo "FAIL: Expected at least 24 WorkTrack migrations (Increments A-F + production-readiness upgrades)." >&2
   exit 1
 fi
 

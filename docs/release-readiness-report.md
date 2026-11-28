@@ -1,6 +1,6 @@
 # WorkTrack — implementation and release-readiness report
 
-28 November 2026. Updated after completing manual opening loan liabilities, customer receivables, agreed repayment schedules, general financial transaction reversals (all 7 types), Owner loan/receipt workflows, offline field operations (bulk crew attendance, exceptions, overtime, interruptions/rain/vehicle breakdowns/downtime, progress/comments), and attendance verification guards. **Release verdict: ready for isolated VM and physical Android acceptance testing; not yet cleared for live production deployment until those environmental checks and a fresh deep security scan on this commit pass.** No production database, Auth account, VM, reset or import was accessed or changed.
+28 November 2026. Updated after the requested security review and financial-control corrections. **Release verdict: candidate for isolated VM and physical Android acceptance testing; not cleared for live production until environmental checks and a fresh deep scan of the corrective release pass.** The requested scan of `446a6679f9cf34b9fdcc1c6119ce25f6a7577c04` completed at 11:18:14 UTC with no findings, but focused review found and corrected financial defects afterward. No production database, Auth account, VM, reset or import was accessed or changed.
 
 ## 1. Authoritative persistence
 
@@ -36,7 +36,7 @@ The repository corrections exist. GitHub synchronization itself cannot be verifi
 
 ## 4. New migrations
 
-Original 0001–0008 remain the installation baseline. Fifteen forward migrations now exist (**23 migrations total**):
+Original 0001–0008 remain the installation baseline. Sixteen forward migrations now exist (**24 migrations total**):
 
 | File prefix | Purpose |
 |---|---|
@@ -55,8 +55,9 @@ Original 0001–0008 remain the installation baseline. Fifteen forward migration
 | `202611280021_attendance_verification_and_guards` | Supervisor attendance reported/verified workflow, approved-week lock, assignment/hours checks, and progress insert hardening |
 | `202611280022_loan_opening_and_repayment_schedule` | Manual opening loan metadata & immutability lock, `loan_repayment_schedules`, and duplicate payment reference guards |
 | `202611280023_reversals_owner_workflows_and_offline_ops` | `financial_reversals` (all 7 types), balanced non-cash `loan_opening` ledger reconciliation, Owner customer-receipt & loan-repayment RLS/verification, instalment `schedule_id` link, and offline interruption / exception-reset capture |
+| `202611280024_financial_security_boundaries` | Direct financial-write serialization, account-derived restricted flags, principal lock, same-loan schedule FK, Admin opening/journal verification, paired source confirmation, opening completeness/reconciliation, validated reversal targets/inverse postings and legacy integrity preflight |
 
-All files end `.sql`. The entire **23-file chain** executes in isolated PGlite with test Auth/Storage scaffolding; PostgreSQL 17.6 extensions, actual grants/PostgREST/Storage and existing legacy data still need testing. New uniqueness constraints may expose existing inconsistencies; do not delete or invent history to force an upgrade through.
+All files end `.sql`. The entire **24-file chain** executes in isolated PGlite and disposable local **PostgreSQL 17.12**, with synthetic Auth/Storage scaffolding. This is not the customer's PostgreSQL 17.6 or actual GoTrue/PostgREST/Storage environment. Migration 0024 deliberately fails on inconsistent legacy openings, reversals, funding flags, evidence states or schedule ownership; it never backfills a loan posting, fabricates a reversal or deletes history. Investigate any failure on the isolated restored copy before requesting an independently reviewed correction; do not force an upgrade through.
 
 ## 5. Approval gaps found and completed now
 
@@ -88,13 +89,15 @@ These approval implementations are complete for the described paths and pass iso
 | Increment E reports/vehicles | 4 | 4 | Report locks/exports and safety evaluation |
 | Increment F sync | 6 | 6 | Queue/PWA/partition and sync rules |
 | Routing | 1 | 1 | Route/access wiring |
-| Production database | 11 | 26 | Complete 23-migration chain, isolated SQL/RLS, adapter read-back, CAS, approvals/rollback/corrections, attendance verification, opening loan & schedules, reversals, Owner RLS, and offline interruption idempotency |
+| Production database | 11 | 39 | Complete 24-migration chain, SQL/RLS, adapter read-back, CAS/approvals, attendance, opening/schedule/reversal controls, Owner restrictions and 13 additional financial security regressions |
 | Administration script wrapper | — | 1 | Runs four Python planning/control unit checks |
-| **Total Vitest** | **68** | **88** | **14 current files** |
+| **Total Vitest** | **68** | **101** | **14 current files** |
 
-Latest full run: **88 passed, 0 failed, 0 skipped** across **14 test files**. The script wrapper contains **four passing Python unit checks**; do not double-count these as four additional Vitest tests. Shell syntax (`bash -n deploy/scripts/*.sh`) and Python compilation (`py_compile`) pass. Automatic application build passes.
+Latest full run (28 November 2026, **11:28:24 UTC**, corrected release candidate): **101 passed, 0 failed, 0 skipped** across **14 test files**, including **39 isolated database tests**. The script wrapper contains **four passing Python unit checks**; do not double-count these as four additional Vitest tests. Shell syntax and Python compilation passed. The automatic application build recorded **build OK** at **11:28:08 UTC** and **11:28:19 UTC** after resolving test compilation errors. Chromium opened `/auth` with HTTP 200, the correct title and zero page errors; that signed-out smoke check is not real-service financial verification or a Docker build.
 
-New regressions initially exposed real UUID, JSON-expression and shared-snapshot failures; these were corrected and rerun. There is no remaining failed test in the final suite. Tests requiring real Auth/Storage/Docker/Postgres services or Android were **not run**, not skipped automated tests. The separate checklist contains 15 VM checks, nine controlled reset/import drill steps and eight Android checks; several are multi-step scenarios.
+Separately, **1 local PostgreSQL concurrency test passed** (`src/test/security_financial_concurrency.py`), not included in the 101 Vitest count. All 24 migrations applied transactionally to a new disposable database on PostgreSQL **17.12**, using only a local Unix socket and synthetic identities. Two Owner direct-table repayment transactions competed for a 10,000-cent principal: the second visibly waited on the business advisory lock; the first committed 7,000 cents; the second was rejected for overpayment and its posting rolled back. Exactly one repayment and one corresponding journal remained. The test rejects any data directory other than the dedicated `/tmp` cluster and accepts no production connection settings.
+
+The new negative regressions reproduced missing opening completeness, unauthorized journal verification, mismatched confirmation, cross-loan schedules, forged reversal markers and incorrect repayment debit purpose before correction; the existing opening source uniqueness constraint already blocked duplicate openings. Restricted-account spoofing and the other corrections pass after migration 0024. The seven-type live-adapter database reversal test also exposed a shared trigger referencing fields absent on other source tables; its forward replacement uses safe record-field lookup. There is no remaining failed automated test. Real Auth/Storage/Docker/customer-PostgreSQL services and physical Android checks were **not run**, not skipped automated tests.
 
 ## 7. Reset/import completion and zero balances
 
@@ -112,7 +115,26 @@ The hardcoded R171,000 shortfall and default planned Wk1–Wk4 progress figures 
 
 ## 9. Security and remaining implementation
 
-The deep scan examined the prior saved commit and found raw assigned-job finance exposure and progress self-verification, plus a warning about human-reported attendance. This review implements database-side operational projections/raw-table denial and a server reviewer/actor guard, with regressions. It also closes arbitrary/reused/unposted ledger sources, transfer fact mismatch, allocation locking, receipt-total and Owner scope-unlock defects. The scan has **not re-certified the new commit**. The quick database scan was incomplete because this workspace is not connected to the actual backend. Do not call the application security-clean.
+The earlier scan found raw assigned-job finance exposure and progress self-verification, plus a warning about human-reported attendance. The application now implements database-side operational projections/raw-table denial and a server reviewer/actor guard, with regressions. It also closes arbitrary/reused/unposted ledger sources, transfer fact mismatch, allocation locking, receipt-total and Owner scope-unlock defects.
+
+The requested fresh deep scan examined saved application commit `446a6679f9cf34b9fdcc1c6119ce25f6a7577c04` and completed at **2026-11-28 11:18:14 UTC**. `agent_security_v2` version **1.94**, `app_mcp` and `app_mcp_deep` returned **zero findings**, with current results. No disabled deep-scan checks were reported. There are **no unresolved findings in those current scan results** and no findings were ignored or marked fixed during this review. This is not a certification of live services or an assurance that no vulnerabilities exist.
+
+The quick database scan could not inspect a connected backend because this workspace has none. The persisted database and dependency results date from **09:44 UTC** and are marked **not up to date**; their empty results are not current backend/dependency verification. A separate fresh lockfile dependency check during this review found **no known vulnerabilities in 54 production dependencies**; it excludes development dependencies and does not refresh the persisted scan record. Real PostgreSQL grants, Storage, sessions and concurrent API clients remain acceptance gates.
+
+Additional read-only source review confirmed stale-epoch checks before replay lookup, active-membership and assigned-job tenant guards, Supervisor financial projection restrictions, evidence parent/epoch/object authorization, and authenticated Admin authorization before privileged account operations. Existing negative regression tests were retained and rerun. Actual Storage/GoTrue/PostgREST behavior and inspection of the production browser bundle for credential exclusion remain isolated-environment checks, not completed tests.
+
+### Focused financial defects corrected after the scan
+
+The automated scan returned no findings, but the requested focused review found genuine database gaps that browser checks did not prevent. Migration 0024 and paired repository corrections now enforce:
+
+- Restricted funding is derived from the actual account; Owner cannot spoof flags, and Admin eligibility approval is required for restricted debt repayment.
+- Only Admin posts opening loans; every positive opening has exactly one balanced non-cash equity/liability posting. Opening verification updates both records atomically; the original unique source key continues blocking duplicates.
+- Owner cannot self-verify a receipt, repayment or journal. Source and journal evidence states must agree at transaction commit; verifier identity is server-derived where stored. Matched transfers retain their independently recorded Admin/Owner approval workflow.
+- Schedule allocations belong to the repayment's loan and business, including when a used schedule is edited later. Repayments debit loan liability, never operating expense.
+- Reversal markers identify an existing same-business target, its true original posting and a verified exact inverse. Unpaid unposted expense cancellation remains the only legitimate no-journal case. Receipts/settlements reconcile parent totals; advances cannot be reversed into negative debt. Lender transfers and linked advances share the same validated reversal in both subledgers.
+- Direct-table financial writers use the same business lock as batch/reset transactions, with loan principal locking restored; the real two-session drill verifies overpayment prevention and rollback.
+
+No additional feature was introduced. These source-identified defects have no persisted scanner finding IDs to mark fixed. **Unresolved confirmed security defects: none established in the completed review.** The deep scanner result applies to the originally requested commit, **not** the subsequent corrective application/migration changes; those changes are verified by the regressions and local concurrency test, and should receive another deep scan before production approval.
 
 Attendance remains human-reported by authorized field staff: Admin must review before payroll approval; software cannot prove hours actually worked. Continue real RLS/storage/session/role-change abuse tests.
 
@@ -120,7 +142,9 @@ Attendance remains human-reported by authorized field staff: Admin must review b
 - **Intentionally deferred:** scheduled SMTP email notification digests.
 - **Required & implemented, environmentally unverified:** authentication password recovery (`/reset-password`) and invitation emails (real SMTP delivery must be verified on the isolated VM).
 - **Environment variables & reverse proxy:** no new server-side environment variables or Nginx Proxy Manager / Envoy reverse proxy changes were added in this release beyond `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, and `STORAGE_DATA_DIR` documented in `deploy/.env.example` and `CONFIGURATION.md`.
-- **Security re-scan:** a fresh deep security scan against this newly committed snapshot (covering opening loans, financial reversals, Owner workflows, and offline sync) must be triggered after this commit is saved.
+- **Security scan:** completed for requested commit `446a6679f9cf34b9fdcc1c6119ce25f6a7577c04` with no findings; the subsequent corrected release has not yet received a fresh deep scan.
+- **Duplicate-reference correction:** original rows remain in database uniqueness indexes after reversal. Reposting the exact same reference/date/amount remains rejected; use a distinct correction reference and retain the audit trail. The browser's active-only duplicate check is less strict than the database; this is a known usability limitation, not a relaxed security rule.
+- **Lender-transfer order:** the tested path is Owner first, Admin completing the lender-advance posting. Owner completing an Admin-first lender advance remains blocked by the Admin-only advance policy; do not bypass that policy. Ordinary internal-transfer and Owner receipt/repayment flows have separate permissions.
 
 **Implemented but environmentally unverified:** actual Node Docker build, Postgres 17.6 upgrade/legacy constraints, GoTrue account workflows and sessions, SMTP invitation/reset delivery, private Storage finalization/retry/orphan recovery, multi-device replay/conflicts, exact reset/import/drain guarantees, encrypted off-site scheduling, full restore and physical Android GPS/PWA.
 

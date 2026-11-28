@@ -1192,6 +1192,8 @@ export async function setLoanOpeningVerified(
   const loan = state.loans.find((l) => l.id === loanId && l.businessId === session.businessId);
   if (!loan) throw new Error("Loan account not found.");
   loan.openingPrincipalVerified = verified;
+  const opening = state.journalEntries.find((j) => j.businessId === session.businessId && j.sourceType === "loan_opening" && j.sourceId === loan.id);
+  if (opening) opening.evidenceStatus = verified ? "verified" : "reported";
   await saveFinanceStore(session, state);
 }
 export async function setupFinanceAccounts(session: AuthSession): Promise<void> {
@@ -1521,6 +1523,16 @@ export async function reverseFinancialTransaction(
       `${ev.eventType === "advance" ? "Loan advance" : "Loan repayment"} ${ev.reference}`,
     );
     reversalJournalEntryId = revJe.id;
+    // Lender transfers and their loan event share a posting; reverse both subledgers.
+    const linkedTransfer = state.transfers.find(
+      (t) => t.businessId === session.businessId && t.transferKind === "lender_advance" && t.journalEntryId === ev.journalEntryId,
+    );
+    if (linkedTransfer && !reversals.some((r) => r.targetType === "transfer" && r.targetId === linkedTransfer.id)) {
+      reversals.unshift({
+        id: newId(), businessId: session.businessId, targetType: "transfer", targetId: linkedTransfer.id,
+        originalJournalEntryId, reversalJournalEntryId, reason: cleanReason, reversedBy: session.userId, createdAt: now,
+      });
+    }
   } else if (input.targetType === "transfer") {
     const tr = state.transfers.find(
       (t) => t.id === input.targetId && t.businessId === session.businessId,

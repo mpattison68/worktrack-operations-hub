@@ -50,3 +50,4 @@ use the editor.
 - Keep payroll header, earnings, adjustments and approval in one source-validated database transaction, because separate requests can leave partial or stale payroll.
 - Reset SQL before resumable Storage cleanup and retain maintenance until cleanup verification succeeds, because the services cannot share a transaction.
 - Bootstrap legacy migration history only with explicit independently verified 0001–0008 confirmation, because an existing manually installed schema must never be replayed.
+- Enforce financial source/verification/reversal integrity and serialize direct-table writes in database triggers as well as batch APIs, because authenticated callers can bypass browser workflow checks.
