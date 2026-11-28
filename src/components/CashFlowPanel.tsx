@@ -11,7 +11,9 @@ import {
   recordOrMatchTransfer,
   setupFinanceAccounts,
   saveForecastAssumption,
+  verifyCustomerReceipt,
 } from "@/lib/data/increment-d-repository";
+import { ReverseTransactionButton } from "@/components/ReverseTransactionButton";
 import {
   calculateWeeklyCashForecast,
   computeCashSummary,
@@ -103,6 +105,7 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
         finance.loanEvents,
         finance.loanRepaymentSchedules ?? [],
         todaySAST(),
+        finance.financialReversals,
       );
       return evaluated.items
         .filter((item) => item.outstandingAmountCents > 0)
@@ -136,6 +139,7 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
     finance.loans,
     finance.loanEvents,
     finance.loanRepaymentSchedules,
+    finance.financialReversals,
     currentMonday,
   ]);
 
@@ -203,13 +207,27 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["finance"] });
-      toast.success("Customer receipt posted to bank ledger.");
+      toast.success(
+        session.role === "admin"
+          ? "Customer receipt posted to bank ledger."
+          : "Customer receipt recorded (awaiting Admin confirmation).",
+      );
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not post receipt."),
   });
 
+  const verifyReceiptMutation = useMutation({
+    mutationFn: (receiptId: string) => verifyCustomerReceipt(session, receiptId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["finance"] });
+      toast.success("Customer receipt verified by Admin.");
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not verify receipt."),
+  });
+
   const setupMutation = useMutation({mutationFn: () => setupFinanceAccounts(session), onSuccess: () => { queryClient.invalidateQueries({queryKey:['finance']}); toast.success('Zero-balance accounts saved to server.'); }, onError: (err) => toast.error(err.message)});
   const canAdminReconcile = can(session.role, "payroll.reconcile");
+  const canRecordReceipt = can(session.role, "payroll.record_payment");
   const accName = (id: string | null) =>
     finance.accounts.find((a) => a.id === id)?.name ?? "External / N/A";
   const jobName = (id: string) => jobs.find((j) => j.id === id)?.name ?? "Job";
@@ -413,17 +431,28 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
                   <span className="text-sm font-semibold tabular-money">
                     {formatZarCents(t.amountCents)} · {t.sharedReference}
                   </span>
-                  <Badge
-                    variant="outline"
-                    className={
-                      t.status === "matched"
-                        ? "gap-1 bg-status-ok-bg text-status-ok"
-                        : "gap-1 bg-status-warn-bg text-status-warn"
-                    }
-                  >
-                    {t.status === "matched" ? <CheckCircle2 className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
-                    {t.status === "matched" ? "Matched (1 posting)" : "Pending match"}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      variant="outline"
+                      className={
+                        t.status === "matched"
+                          ? "gap-1 bg-status-ok-bg text-status-ok"
+                          : "gap-1 bg-status-warn-bg text-status-warn"
+                      }
+                    >
+                      {t.status === "matched" ? <CheckCircle2 className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
+                      {t.status === "matched" ? "Matched (1 posting)" : "Pending match"}
+                    </Badge>
+                    {t.status === "matched" && (
+                      <ReverseTransactionButton
+                        session={session}
+                        targetType="transfer"
+                        targetId={t.id}
+                        label={`Cash transfer ${formatZarCents(t.amountCents)} (${t.sharedReference})`}
+                        reversal={(finance.financialReversals ?? []).find((r) => r.targetType === "transfer" && r.targetId === t.id)}
+                      />
+                    )}
+                  </div>
                 </div>
                 <p className="text-muted-foreground">
                   {formatDateSA(t.transferDate)} · {t.transferKind.replace(/_/g, " ")} → {accName(t.toAccountId)}
@@ -465,35 +494,69 @@ export function CashFlowPanel({ session, finance, jobs }: CashFlowPanelProps) {
           <FinanceMaintenancePanel session={session} finance={finance} jobs={jobs} kind="invoice"/>
           {finance.milestones.map((ms) => (
             <Card key={ms.id}>
-              <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4 text-xs">
-                <div>
-                  <p className="text-sm font-semibold">{ms.label}</p>
-                  <p className="text-muted-foreground">
-                    {jobName(ms.jobId)} · Expected {formatDateSA(ms.expectedDate)} ·{" "}
-                    <strong className="tabular-money">{formatZarCents(ms.expectedAmountCents)}</strong>
-                  </p>
-                  <p className="text-muted-foreground">
-                    Received: <strong className="tabular-money">{formatZarCents(ms.receivedAmountCents)}</strong>
-                    {ms.receivedDate ? ` on ${formatDateSA(ms.receivedDate)}` : " (not counted in available cash yet)"}
-                  </p>
+              <CardContent className="space-y-3 p-4 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">{ms.label}</p>
+                    <p className="text-muted-foreground">
+                      {jobName(ms.jobId)} · Expected {formatDateSA(ms.expectedDate)} ·{" "}
+                      <strong className="tabular-money">{formatZarCents(ms.expectedAmountCents)}</strong>
+                    </p>
+                    <p className="text-muted-foreground">
+                      Received: <strong className="tabular-money">{formatZarCents(ms.receivedAmountCents)}</strong>
+                      {ms.receivedDate ? ` on ${formatDateSA(ms.receivedDate)}` : " (not counted in available cash yet)"}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">{ms.status}</Badge>
+                    {canRecordReceipt && ms.status !== "received" && (
+                      <>
+                        <Input
+                          inputMode="decimal"
+                          placeholder="ZAR received"
+                          value={msAmounts[ms.id] ?? ""}
+                          onChange={(e) => setMsAmounts((p) => ({ ...p, [ms.id]: e.target.value }))}
+                          className="h-9 w-32 tabular-money"
+                        />
+                        <Button size="sm" onClick={() => receiptMutation.mutate(ms.id)} className="h-9">
+                          {canAdminReconcile ? "Post receipt" : "Record receipt"}
+                        </Button>
+                      </>
+                    )}
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline">{ms.status}</Badge>
-                  {canAdminReconcile && ms.status !== "received" && (
-                    <>
-                      <Input
-                        inputMode="decimal"
-                        placeholder="ZAR received"
-                        value={msAmounts[ms.id] ?? ""}
-                        onChange={(e) => setMsAmounts((p) => ({ ...p, [ms.id]: e.target.value }))}
-                        className="h-9 w-32 tabular-money"
-                      />
-                      <Button size="sm" onClick={() => receiptMutation.mutate(ms.id)} className="h-9">
-                        Post receipt
-                      </Button>
-                    </>
-                  )}
-                </div>
+                {(finance.customerReceipts ?? []).filter((r) => r.milestoneId === ms.id).length > 0 && (
+                  <div className="space-y-1.5 border-t border-border pt-2">
+                    {(finance.customerReceipts ?? [])
+                      .filter((r) => r.milestoneId === ms.id)
+                      .map((r) => (
+                        <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                          <span>
+                            Receipt {formatDateSA(r.receiptDate)} ·{" "}
+                            <strong className="tabular-money text-foreground">{formatZarCents(r.amountCents)}</strong>
+                            {r.reference ? ` · Ref: ${r.reference}` : ""}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <Badge variant="outline" className={r.evidenceStatus === "reported" ? "bg-status-warn-bg text-status-warn" : "bg-status-ok-bg text-status-ok"}>
+                              {r.evidenceStatus ?? "verified"}
+                            </Badge>
+                            {canAdminReconcile && r.evidenceStatus === "reported" && (
+                              <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => verifyReceiptMutation.mutate(r.id)}>
+                                Verify
+                              </Button>
+                            )}
+                            <ReverseTransactionButton
+                              session={session}
+                              targetType="customer_receipt"
+                              targetId={r.id}
+                              label={`Customer receipt ${formatZarCents(r.amountCents)} (${r.reference || formatDateSA(r.receiptDate)})`}
+                              reversal={(finance.financialReversals ?? []).find((rev) => rev.targetType === "customer_receipt" && rev.targetId === r.id)}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
           ))}

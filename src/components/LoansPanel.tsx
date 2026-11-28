@@ -10,13 +10,16 @@ import {
   recordLoanEvent,
   recordRestrictedGrantReceipt,
   setLoanOpeningVerified,
+  verifyLoanEvent,
 } from "@/lib/data/increment-d-repository";
 import {
   buildLoanStatement,
   calculateLoanBalanceCents,
   computeCashSummary,
   evaluateLoanRepaymentSchedule,
+  reconcileLoanLedgerCents,
 } from "@/lib/domain/finance-calc";
+import { ReverseTransactionButton } from "@/components/ReverseTransactionButton";
 import {
   buildPrintableReportHtml,
   buildSafeCsv,
@@ -73,6 +76,7 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
   const [evAmountRand, setEvAmountRand] = React.useState("");
   const [evDate, setEvDate] = React.useState(todaySAST());
   const [evAccId, setEvAccId] = React.useState(cashAccounts[0]?.id ?? "");
+  const [evScheduleId, setEvScheduleId] = React.useState<string>("auto");
   const [evRef, setEvRef] = React.useState("");
   const [evNote, setEvNote] = React.useState("");
   const [restrictedApproved, setRestrictedApproved] = React.useState(false);
@@ -92,6 +96,9 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
 
   const selectedAccount = cashAccounts.find((a) => a.id === evAccId);
   const canEditLoans = can(session.role, "loans.edit");
+  const canRecordRepayment = canEditLoans || session.role === "owner";
+  const selectableAccounts = canEditLoans ? cashAccounts : cashAccounts.filter((a) => !a.isRestricted);
+  const effectiveEvType: LoanEventType = canEditLoans ? evType : "repayment";
 
   const loanEventMutation = useMutation({
     mutationFn: () => {
@@ -101,9 +108,10 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
       return recordLoanEvent(session, {
         loanId: loan.id,
         eventDate: evDate,
-        eventType: evType,
+        eventType: effectiveEvType,
         amountCents: cents,
         accountId: evAccId,
+        scheduleId: effectiveEvType === "repayment" && evScheduleId !== "auto" ? evScheduleId : null,
         restrictedEligibilityApproved: restrictedApproved,
         reference: evRef,
         note: evNote,
@@ -111,13 +119,27 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["finance"] });
-      toast.success("Loan event posted (zero interest, separate from operating expenses).");
+      toast.success(
+        canEditLoans
+          ? "Loan event posted (zero interest, separate from operating expenses)."
+          : "Loan repayment recorded and submitted for Admin confirmation.",
+      );
       setEvAmountRand("");
+      setEvScheduleId("auto");
       setEvRef("");
       setEvNote("");
       setRestrictedApproved(false);
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not record loan event."),
+  });
+
+  const verifyLoanEventMutation = useMutation({
+    mutationFn: (loanEventId: string) => verifyLoanEvent(session, loanEventId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["finance"] });
+      toast.success("Loan repayment confirmed by Admin.");
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not confirm repayment."),
   });
 
   const grantMutation = useMutation({
@@ -184,13 +206,21 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
     );
   }
 
-  const summary = calculateLoanBalanceCents(loan, finance.loanEvents);
-  const statement = buildLoanStatement(loan, finance.loanEvents);
+  const summary = calculateLoanBalanceCents(loan, finance.loanEvents, finance.financialReversals);
+  const statement = buildLoanStatement(loan, finance.loanEvents, finance.financialReversals);
   const scheduleEval = evaluateLoanRepaymentSchedule(
     loan,
     finance.loanEvents,
     finance.loanRepaymentSchedules ?? [],
     todaySAST(),
+    finance.financialReversals,
+  );
+  const ledgerRecon = reconcileLoanLedgerCents(
+    finance.loans,
+    finance.loanEvents,
+    finance.accounts,
+    finance.journalEntries,
+    finance.financialReversals,
   );
 
   const buildStatementExport = () => {
@@ -279,6 +309,16 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
               <Badge
                 variant="outline"
                 className={
+                  ledgerRecon.balanced
+                    ? "gap-1 bg-status-ok-bg text-status-ok"
+                    : "gap-1 bg-status-warn-bg text-status-warn"
+                }
+              >
+                {ledgerRecon.balanced ? "Ledger reconciled" : `Ledger variance ${formatZarCents(ledgerRecon.varianceCents)}`}
+              </Badge>
+              <Badge
+                variant="outline"
+                className={
                   loan.openingPrincipalVerified
                     ? "gap-1 bg-status-ok-bg text-status-ok"
                     : "gap-1 bg-status-warn-bg text-status-warn"
@@ -334,13 +374,17 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
         </CardContent>
       </Card>
 
-      {canEditLoans && (
+      {canRecordRepayment && (
         <div className="grid gap-4 lg:grid-cols-2">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">Record loan advance or repayment</CardTitle>
+              <CardTitle className="text-base">
+                {canEditLoans ? "Record loan advance or repayment" : "Record payment made to lender"}
+              </CardTitle>
               <CardDescription className="text-xs">
-                Advances increase cash and loan liability without changing worker arrears. Repayments reduce principal and never post to operating expenses.
+                {canEditLoans
+                  ? "Advances increase cash and loan liability without changing worker arrears. Repayments reduce principal and never post to operating expenses."
+                  : "Record actual repayments made to the lender from unrestricted funds. Submitted for Admin confirmation."}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -354,10 +398,10 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1">
                     <Label>Event type</Label>
-                    <Select value={evType} onValueChange={(v) => setEvType(v as LoanEventType)}>
+                    <Select value={effectiveEvType} onValueChange={(v) => setEvType(v as LoanEventType)} disabled={!canEditLoans}>
                       <SelectTrigger className="touch-target"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="advance">New lender advance</SelectItem>
+                        {canEditLoans && <SelectItem value="advance">New lender advance</SelectItem>}
                         <SelectItem value="repayment">Principal repayment</SelectItem>
                       </SelectContent>
                     </Select>
@@ -373,7 +417,7 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
                     <Select value={evAccId} onValueChange={setEvAccId}>
                       <SelectTrigger className="touch-target"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {cashAccounts.map((a) => (
+                        {selectableAccounts.map((a) => (
                           <SelectItem key={a.id} value={a.id}>
                             {a.name} ({formatZarCents(cashSummary.byAccountId[a.id] ?? 0)})
                           </SelectItem>
@@ -386,7 +430,26 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
                     <Input id="ln-date" type="date" value={evDate} onChange={(e) => setEvDate(e.target.value)} className="touch-target" required />
                   </div>
                 </div>
-                {selectedAccount?.isRestricted && evType === "repayment" && (
+                {effectiveEvType === "repayment" && scheduleEval.items.some((i) => i.outstandingAmountCents > 0) && (
+                  <div className="space-y-1">
+                    <Label>Allocate to agreed instalment (optional)</Label>
+                    <Select value={evScheduleId} onValueChange={setEvScheduleId}>
+                      <SelectTrigger className="touch-target"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">Auto-allocate oldest due instalment (FIFO)</SelectItem>
+                        {scheduleEval.items
+                          .filter((i) => i.outstandingAmountCents > 0)
+                          .map((i) => (
+                            <SelectItem key={i.schedule.id} value={i.schedule.id}>
+                              Due {formatDateSA(i.schedule.expectedDate)} · Outstanding {formatZarCents(i.outstandingAmountCents)}
+                              {i.schedule.reference ? ` (${i.schedule.reference})` : ""}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                {canEditLoans && selectedAccount?.isRestricted && effectiveEvType === "repayment" && (
                   <div className="flex items-center gap-2 rounded-md border border-status-warn bg-status-warn-bg/50 p-2.5 text-xs">
                     <Checkbox
                       id="ln-restr"
@@ -403,13 +466,13 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
                   <Input placeholder="Note" value={evNote} onChange={(e) => setEvNote(e.target.value)} className="touch-target" />
                 </div>
                 <Button type="submit" disabled={loanEventMutation.isPending} className="touch-target w-full">
-                  Post loan {evType}
+                  {canEditLoans ? `Post loan ${effectiveEvType}` : "Submit loan repayment for confirmation"}
                 </Button>
               </form>
             </CardContent>
           </Card>
 
-          <Card>
+          {canEditLoans && <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base">Record restricted grant funding</CardTitle>
               <CardDescription className="text-xs">
@@ -441,7 +504,7 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
                 </Button>
               </form>
             </CardContent>
-          </Card>
+          </Card>}
         </div>
       )}
 
@@ -555,20 +618,46 @@ export function LoansPanel({ session, finance }: LoansPanelProps) {
                   <th className="py-2 pr-3 text-right">Advance</th>
                   <th className="py-2 pr-3 text-right">Repayment</th>
                   <th className="py-2 text-right">Running balance</th>
+                  <th className="py-2 pl-3 text-right">Status / Action</th>
                 </tr>
               </thead>
               <tbody>
-                {statement.rows.map((row) => (
-                  <tr key={row.id} className="border-b border-border/60">
-                    <td className="py-2 pr-3 whitespace-nowrap">{formatDateSA(row.date)}</td>
-                    <td className="py-2 pr-3 capitalize">{row.type.replace(/_/g, " ")}</td>
-                    <td className="py-2 pr-3">{row.reference}</td>
-                    <td className="py-2 pr-3 text-muted-foreground">{row.description}</td>
-                    <td className="py-2 pr-3 text-right tabular-money">{row.advanceCents > 0 ? `+ ${formatZarCents(row.advanceCents)}` : "—"}</td>
-                    <td className="py-2 pr-3 text-right tabular-money">{row.repaymentCents > 0 ? `- ${formatZarCents(row.repaymentCents)}` : "—"}</td>
-                    <td className="py-2 text-right font-semibold tabular-money">{formatZarCents(row.runningBalanceCents)}</td>
-                  </tr>
-                ))}
+                {statement.rows.map((row) => {
+                  const targetType = row.type === "advance" ? "loan_advance" : row.type === "repayment" ? "loan_repayment" : null;
+                  const reversal = targetType
+                    ? (finance.financialReversals ?? []).find((r) => r.targetType === targetType && r.targetId === row.id)
+                    : undefined;
+                  return (
+                    <tr key={row.id} className="border-b border-border/60">
+                      <td className="py-2 pr-3 whitespace-nowrap">{formatDateSA(row.date)}</td>
+                      <td className="py-2 pr-3 capitalize">{row.type.replace(/_/g, " ")}</td>
+                      <td className="py-2 pr-3">{row.reference}</td>
+                      <td className="py-2 pr-3 text-muted-foreground">{row.description}</td>
+                      <td className="py-2 pr-3 text-right tabular-money">{row.advanceCents !== 0 ? `${row.advanceCents > 0 ? "+" : "-"} ${formatZarCents(Math.abs(row.advanceCents))}` : "—"}</td>
+                      <td className="py-2 pr-3 text-right tabular-money">{row.repaymentCents !== 0 ? `${row.repaymentCents > 0 ? "-" : "+"} ${formatZarCents(Math.abs(row.repaymentCents))}` : "—"}</td>
+                      <td className="py-2 text-right font-semibold tabular-money">{formatZarCents(row.runningBalanceCents)}</td>
+                      <td className="py-2 pl-3 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Badge variant="outline" className="text-[10px]">{row.evidenceStatus}</Badge>
+                          {canEditLoans && targetType && row.evidenceStatus === "reported" && !reversal && (
+                            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => verifyLoanEventMutation.mutate(row.id)}>
+                              Confirm
+                            </Button>
+                          )}
+                          {targetType && (
+                            <ReverseTransactionButton
+                              session={session}
+                              targetType={targetType}
+                              targetId={row.id}
+                              label={`${row.type} ${row.reference}`}
+                              reversal={reversal}
+                            />
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

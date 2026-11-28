@@ -11,6 +11,8 @@ import type {
   ExpenseRecord,
   ExpenseRequest,
   FinanceBundle,
+  FinancialReversal,
+  FinancialReversalTargetType,
   JournalEntry,
   JournalLine,
   JournalSourceType,
@@ -30,6 +32,7 @@ import {
   calculateLoanBalanceCents,
   computeAccountBalanceCents,
   findDuplicateExpense,
+  getReversedTargetIds,
   validateBalancedJournalLines,
 } from "@/lib/domain/finance-calc";
 import { assertBusinessBoundary, can } from "@/lib/permissions";
@@ -46,6 +49,7 @@ const FINANCE_TABLES: TableMapping[] = [
  {key:'reconciliations',table:'reconciliations'}, {key:'milestones',table:'payment_milestones'},
  {key:'loans',table:'loans'}, {key:'loanEvents',table:'loan_events'},
  {key:'loanRepaymentSchedules',table:'loan_repayment_schedules'},
+ {key:'financialReversals',table:'financial_reversals'},
  {key:'customerReceipts',table:'customer_receipts'}, {key:'expenseSettlements',table:'expense_settlements'}, {key:'forecastAssumptions',table:'forecast_assumptions'},
 ];
 async function loadFinanceStore(session: AuthSession): Promise<FinanceBundle> {
@@ -129,7 +133,40 @@ function createInitialFinanceStore(): FinanceBundle {
       contra("acc-opex-a", "5000", "Operating Expenses", "operating_expenses"),
       contra("acc-capex-a", "1500", "Capital Expenditure", "capital_expenditure"),
     ],
-    journalEntries: [],
+    journalEntries: [
+      {
+        id: "je-loan-open-a",
+        businessId: SYNTHETIC_BIZ_A,
+        entryDate: "2026-11-01",
+        sourceType: "loan_opening",
+        sourceId: "loan-main-a",
+        jobId: null,
+        reference: "SYN-LOAN-001",
+        description: "Opening zero-interest loan liability — Equipment & Working-Capital Lender (Synthetic) (non-cash)",
+        evidenceStatus: "reported",
+        reversalOfId: null,
+        lines: [
+          {
+            id: "jl-loan-open-a-dr",
+            accountId: "acc-owner-equity-a",
+            accountType: "owner_equity",
+            debitCents: 25690000,
+            creditCents: 0,
+            memo: "Opening loan liability equity offset (non-cash)",
+          },
+          {
+            id: "jl-loan-open-a-cr",
+            accountId: "acc-loan-liability-a",
+            accountType: "loan_liability",
+            debitCents: 0,
+            creditCents: 25690000,
+            memo: "Opening zero-interest loan liability",
+          },
+        ],
+        createdBy: "admin-1",
+        createdAt: now,
+      },
+    ],
     wagePayments: [],
     expenses: [],
     expenseRequests: [],
@@ -184,6 +221,7 @@ function createInitialFinanceStore(): FinanceBundle {
     ],
     loanEvents: [],
     loanRepaymentSchedules: [],
+    financialReversals: [],
   };
 }
 
@@ -285,6 +323,7 @@ export async function listFinanceBundle(session: AuthSession): Promise<FinanceBu
       loans: [],
       loanEvents: [],
       loanRepaymentSchedules: [],
+      financialReversals: [],
     };
   }
 
@@ -300,6 +339,7 @@ export async function listFinanceBundle(session: AuthSession): Promise<FinanceBu
     loans: state.loans.filter((l) => l.businessId === session.businessId),
     loanEvents: state.loanEvents.filter((ev) => ev.businessId === session.businessId),
     loanRepaymentSchedules: (state.loanRepaymentSchedules ?? []).filter((s) => s.businessId === session.businessId),
+    financialReversals: (state.financialReversals ?? []).filter((r) => r.businessId === session.businessId),
     customerReceipts:state.customerReceipts ?? [],expenseSettlements:state.expenseSettlements ?? [],forecastAssumptions:state.forecastAssumptions ?? [],
   };
 }
@@ -336,8 +376,9 @@ export async function recordBulkWagePayment(
     throw new Error("Restricted funding accounts cannot be used for ordinary wage payments without explicit approval.");
   }
 
+  const reversedWageIds = getReversedTargetIds(state.financialReversals, "wage_payment");
   const existingAllocations = state.wagePayments
-    .filter((p) => p.businessId === session.businessId)
+    .filter((p) => p.businessId === session.businessId && !reversedWageIds.has(p.id))
     .flatMap((p) => p.allocations);
 
   const paymentId = newId();
@@ -870,8 +911,8 @@ export async function recordCustomerMilestoneReceipt(
   session: AuthSession,
   input: { milestoneId: string; receivedDate: string; receivedAmountCents: number; accountId: string; reference: string },
 ): Promise<PaymentMilestone> {
-  if (!can(session.role, "payroll.reconcile")) {
-    throw new Error("Access denied: only Management / Admin can post customer receipts.");
+  if (!can(session.role, "payroll.record_payment")) {
+    throw new Error("Access denied: only Management / Admin or Owner can record customer receipts.");
   }
   if (!Number.isInteger(input.receivedAmountCents) || input.receivedAmountCents <= 0) {
     throw new Error("Received amount must be a positive ZAR value.");
@@ -883,10 +924,12 @@ export async function recordCustomerMilestoneReceipt(
   if (!acc || !acc.isCashAccount) throw new Error("Select a valid cash or bank account.");
   const revAcc = findAccountByType(state, session.businessId, "customer_revenue");
   const cleanRef = input.reference.trim();
+  const reversedReceiptIds = getReversedTargetIds(state.financialReversals, "customer_receipt");
   if (
     cleanRef &&
     (state.customerReceipts ?? []).some(
       (r) =>
+        !reversedReceiptIds.has(r.id) &&
         r.milestoneId === ms.id &&
         r.receiptDate === input.receivedDate &&
         r.amountCents === input.receivedAmountCents &&
@@ -897,6 +940,7 @@ export async function recordCustomerMilestoneReceipt(
   }
 
   const receiptId = newId();
+  const evidenceStatus: EvidenceStatus = session.role === "admin" ? "verified" : "reported";
   const je = appendBalancedJournalEntry(state, {
     businessId: session.businessId,
     entryDate: input.receivedDate,
@@ -905,7 +949,7 @@ export async function recordCustomerMilestoneReceipt(
     jobId: ms.jobId,
     reference: input.reference.trim() || ms.reference,
     description: `Customer receipt: ${ms.label}`,
-    evidenceStatus: "verified",
+    evidenceStatus,
     lines: [
       {
         id: newId(),
@@ -927,7 +971,21 @@ export async function recordCustomerMilestoneReceipt(
     createdBy: session.userId,
   });
 
-  (state.customerReceipts ??= []).push({id:receiptId,businessId:session.businessId,milestoneId:ms.id,jobId:ms.jobId,receiptDate:input.receivedDate,amountCents:input.receivedAmountCents,accountId:acc.id,reference:input.reference,journalEntryId:je.id,recordedBy:session.userId,createdAt:new Date().toISOString()});
+  (state.customerReceipts ??= []).push({
+    id: receiptId,
+    businessId: session.businessId,
+    milestoneId: ms.id,
+    jobId: ms.jobId,
+    receiptDate: input.receivedDate,
+    amountCents: input.receivedAmountCents,
+    accountId: acc.id,
+    reference: input.reference.trim(),
+    journalEntryId: je.id,
+    evidenceStatus,
+    verifiedBy: session.role === "admin" ? session.userId : null,
+    recordedBy: session.userId,
+    createdAt: new Date().toISOString(),
+  });
   ms.receivedAmountCents += input.receivedAmountCents;
   ms.receivedDate = input.receivedDate;
   ms.accountId = acc.id;
@@ -938,6 +996,20 @@ export async function recordCustomerMilestoneReceipt(
   return ms;
 }
 
+export async function verifyCustomerReceipt(session: AuthSession, receiptId: string): Promise<void> {
+  if (session.role !== "admin") {
+    throw new Error("Access denied: only Management / Admin can verify customer receipts.");
+  }
+  const state = await loadFinanceStore(session);
+  const rec = (state.customerReceipts ?? []).find((r) => r.id === receiptId && r.businessId === session.businessId);
+  if (!rec) throw new Error("Customer receipt not found.");
+  rec.evidenceStatus = "verified";
+  rec.verifiedBy = session.userId;
+  const je = state.journalEntries.find((j) => j.id === rec.journalEntryId);
+  if (je) je.evidenceStatus = "verified";
+  await saveFinanceStore(session, state);
+}
+
 export async function recordLoanEvent(
   session: AuthSession,
   input: {
@@ -946,13 +1018,20 @@ export async function recordLoanEvent(
     eventType: LoanEventType;
     amountCents: number;
     accountId: string;
+    scheduleId?: string | null;
     restrictedEligibilityApproved: boolean;
     reference: string;
     note: string;
   },
 ): Promise<LoanEvent> {
-  if (!can(session.role, "loans.edit")) {
-    throw new Error("Access denied: only Management / Admin can record loan advances or repayments.");
+  const isAdmin = can(session.role, "loans.edit");
+  const isOwnerRepayment = session.role === "owner" && input.eventType === "repayment";
+  if (!isAdmin && !isOwnerRepayment) {
+    throw new Error(
+      session.role === "owner"
+        ? "Access denied: only Management / Admin can record loan advances or adjustments. Owner may record loan repayments for Admin confirmation."
+        : "Access denied: you do not have permission to record loan transactions.",
+    );
   }
   if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) {
     throw new Error("Loan event amount must be a positive ZAR value.");
@@ -964,22 +1043,35 @@ export async function recordLoanEvent(
   if (!acc || !acc.isCashAccount) throw new Error("Select a valid cash/bank/funding account.");
 
   // T16 guard: restricted grant funds cannot be used for debt repayment unless explicitly eligible & approved
+  if (acc.isRestricted && !isAdmin) {
+    throw new Error("Access denied: only Management / Admin can approve or post repayments from restricted funding.");
+  }
   if (acc.isRestricted && input.eventType === "repayment" && !input.restrictedEligibilityApproved) {
     throw new Error(
       "Restricted funding cannot be used for loan repayment unless eligibility is explicitly confirmed and approved.",
     );
   }
+  let resolvedScheduleId: string | null = null;
+  if (input.scheduleId && input.eventType === "repayment") {
+    const sched = (state.loanRepaymentSchedules ?? []).find(
+      (s) => s.id === input.scheduleId && s.loanId === loan.id && s.businessId === session.businessId,
+    );
+    if (!sched) throw new Error("Selected repayment schedule instalment was not found on this loan.");
+    resolvedScheduleId = sched.id;
+  }
   if (input.eventType === "repayment") {
-    const balance = calculateLoanBalanceCents(loan, state.loanEvents);
+    const balance = calculateLoanBalanceCents(loan, state.loanEvents, state.financialReversals);
     if (input.amountCents > balance.remainingPrincipalCents) {
       throw new Error("Repayment exceeds remaining loan principal.");
     }
   }
   const cleanRef = input.reference.trim();
+  const reversedLoanIds = getReversedTargetIds(state.financialReversals, ["loan_advance", "loan_repayment"]);
   if (
     cleanRef &&
     state.loanEvents.some(
       (ev) =>
+        !reversedLoanIds.has(ev.id) &&
         ev.loanId === loan.id &&
         ev.eventType === input.eventType &&
         ev.eventDate === input.eventDate &&
@@ -992,6 +1084,7 @@ export async function recordLoanEvent(
 
   const loanLiab = findAccountByType(state, session.businessId, "loan_liability");
   const eventId = newId();
+  const evidenceStatus: EvidenceStatus = isAdmin ? "verified" : "reported";
 
   const lines: JournalLine[] =
     input.eventType === "advance"
@@ -1012,7 +1105,7 @@ export async function recordLoanEvent(
     jobId: null,
     reference: input.reference.trim() || `LOAN-${input.eventDate}`,
     description: `${input.eventType === "advance" ? "Loan advance" : "Loan repayment"} — ${loan.lenderName}`,
-    evidenceStatus: "verified",
+    evidenceStatus,
     lines,
     createdBy: session.userId,
   });
@@ -1025,11 +1118,12 @@ export async function recordLoanEvent(
     eventType: input.eventType,
     amountCents: input.amountCents,
     accountId: acc.id,
+    scheduleId: resolvedScheduleId,
     usedRestrictedFunding: acc.isRestricted,
     restrictedEligibilityApproved: acc.isRestricted && input.restrictedEligibilityApproved,
     reference: input.reference.trim(),
     note: input.note.trim(),
-    evidenceStatus: "verified",
+    evidenceStatus,
     journalEntryId: je.id,
     recordedBy: session.userId,
     createdAt: new Date().toISOString(),
@@ -1037,6 +1131,19 @@ export async function recordLoanEvent(
   state.loanEvents.unshift(ev);
   await saveFinanceStore(session, state);
   return ev;
+}
+
+export async function verifyLoanEvent(session: AuthSession, loanEventId: string): Promise<void> {
+  if (session.role !== "admin") {
+    throw new Error("Access denied: only Management / Admin can verify loan repayments.");
+  }
+  const state = await loadFinanceStore(session);
+  const ev = state.loanEvents.find((e) => e.id === loanEventId && e.businessId === session.businessId);
+  if (!ev) throw new Error("Loan transaction not found.");
+  ev.evidenceStatus = "verified";
+  const je = state.journalEntries.find((j) => j.id === ev.journalEntryId);
+  if (je) je.evidenceStatus = "verified";
+  await saveFinanceStore(session, state);
 }
 
 export async function recordRestrictedGrantReceipt(
@@ -1137,7 +1244,40 @@ export async function createLoanAccount(
     createdAt: new Date().toISOString(),
   };
   state.loans.push(loan);
-  // Opening loan liability never increases cash/bank accounts or affects job profitability.
+  // Reconcile opening loan liability to the ledger via a balanced, strictly non-cash opening entry.
+  if (loan.openingPrincipalCents > 0) {
+    const equityAcc = findAccountByType(state, session.businessId, "owner_equity");
+    const loanLiab = findAccountByType(state, session.businessId, "loan_liability");
+    appendBalancedJournalEntry(state, {
+      businessId: session.businessId,
+      entryDate: loan.effectiveDate || loan.createdAt.slice(0, 10),
+      sourceType: "loan_opening",
+      sourceId: loan.id,
+      jobId: null,
+      reference: loan.reference || `OPENING-${loan.effectiveDate || loan.createdAt.slice(0, 10)}`,
+      description: `Opening zero-interest loan liability — ${loan.lenderName} (non-cash)`,
+      evidenceStatus: loan.openingPrincipalVerified ? "verified" : "reported",
+      lines: [
+        {
+          id: newId(),
+          accountId: equityAcc.id,
+          accountType: equityAcc.accountType,
+          debitCents: loan.openingPrincipalCents,
+          creditCents: 0,
+          memo: "Opening loan liability equity offset (non-cash)",
+        },
+        {
+          id: newId(),
+          accountId: loanLiab.id,
+          accountType: loanLiab.accountType,
+          debitCents: 0,
+          creditCents: loan.openingPrincipalCents,
+          memo: "Opening zero-interest loan liability",
+        },
+      ],
+      createdBy: session.userId,
+    });
+  }
   await saveFinanceStore(session, state);
   return loan;
 }
@@ -1214,4 +1354,228 @@ export async function saveForecastAssumption(session:AuthSession,input:{jobId:st
  const state=await loadFinanceStore(session);const existing=(state.forecastAssumptions??[]).find(a=>a.jobId===input.jobId);
  if(existing)Object.assign(existing,input,{updatedAt:new Date().toISOString()});else(state.forecastAssumptions??=[]).push({id:newId(),businessId:session.businessId,...input,updatedAt:new Date().toISOString()});
  await saveFinanceStore(session,state);
+}
+
+/**
+ * Reverse a posted financial transaction while preserving the original record and journal entry.
+ * Admin-only; requires a correction reason; prevents duplicate reversals; updates derived balances
+ * (cash, customer receivables, wage allocations, expenses, repayment schedules, and loan balances)
+ * without distorting job profitability.
+ */
+export async function reverseFinancialTransaction(
+  session: AuthSession,
+  input: {
+    targetType: FinancialReversalTargetType;
+    targetId: string;
+    reason: string;
+  },
+): Promise<FinancialReversal> {
+  if (session.role !== "admin") {
+    throw new Error("Access denied: only Management / Admin can reverse financial transactions.");
+  }
+  const cleanReason = input.reason.trim();
+  if (cleanReason.length < 3) {
+    throw new Error("A correction reason of at least 3 characters is required to reverse a transaction.");
+  }
+
+  const state = await loadFinanceStore(session);
+  const reversals = (state.financialReversals ??= []);
+
+  if (reversals.some((r) => r.targetType === input.targetType && r.targetId === input.targetId)) {
+    throw new Error("This transaction has already been reversed. Duplicate reversals are blocked.");
+  }
+
+  const createInvertingJournal = (origJournalId: string, label: string): JournalEntry => {
+    const orig = state.journalEntries.find(
+      (j) => j.id === origJournalId && j.businessId === session.businessId,
+    );
+    if (!orig) throw new Error("Original journal entry not found.");
+    if (orig.sourceType === "reversal") {
+      throw new Error("A reversal entry cannot be reversed again.");
+    }
+    if (state.journalEntries.some((j) => j.reversalOfId === orig.id)) {
+      throw new Error("This journal entry has already been reversed.");
+    }
+    const invertedLines: JournalLine[] = orig.lines.map((line) => ({
+      id: newId(),
+      accountId: line.accountId,
+      accountType: line.accountType,
+      debitCents: line.creditCents,
+      creditCents: line.debitCents,
+      memo: `Reversal: ${line.memo}`,
+    }));
+    const err = validateBalancedJournalLines(invertedLines);
+    if (err) throw new Error(err);
+
+    const revEntry: JournalEntry = {
+      id: newId(),
+      businessId: session.businessId,
+      entryDate: new Date().toISOString().slice(0, 10),
+      sourceType: "reversal",
+      sourceId: orig.id,
+      jobId: orig.jobId,
+      reference: `REV-${orig.reference || orig.entryDate}`,
+      description: `Reversal (${cleanReason}): ${label}`,
+      evidenceStatus: "verified",
+      reversalOfId: orig.id,
+      lines: invertedLines,
+      createdBy: session.userId,
+      createdAt: new Date().toISOString(),
+    };
+    state.journalEntries.unshift(revEntry);
+    return revEntry;
+  };
+
+  let originalJournalEntryId: string | null = null;
+  let reversalJournalEntryId: string | null = null;
+  const now = new Date().toISOString();
+
+  if (input.targetType === "customer_receipt") {
+    const rec = (state.customerReceipts ?? []).find(
+      (r) => r.id === input.targetId && r.businessId === session.businessId,
+    );
+    if (!rec) throw new Error("Customer receipt not found.");
+    const ms = state.milestones.find((m) => m.id === rec.milestoneId && m.businessId === session.businessId);
+    if (!ms) throw new Error("Parent customer milestone not found.");
+    originalJournalEntryId = rec.journalEntryId;
+    const revJe = createInvertingJournal(rec.journalEntryId, `Customer receipt ${rec.reference}`);
+    reversalJournalEntryId = revJe.id;
+    ms.receivedAmountCents = Math.max(0, ms.receivedAmountCents - rec.amountCents);
+    ms.status =
+      ms.receivedAmountCents === 0
+        ? "expected"
+        : ms.receivedAmountCents >= ms.expectedAmountCents
+          ? "received"
+          : "partial";
+  } else if (input.targetType === "wage_payment") {
+    const wp = state.wagePayments.find(
+      (w) => w.id === input.targetId && w.businessId === session.businessId,
+    );
+    if (!wp) throw new Error("Wage payment not found.");
+    originalJournalEntryId = wp.journalEntryId;
+    const revJe = createInvertingJournal(wp.journalEntryId, `Wage payment ${wp.reference}`);
+    reversalJournalEntryId = revJe.id;
+  } else if (input.targetType === "expense") {
+    const exp = state.expenses.find(
+      (e) => e.id === input.targetId && e.businessId === session.businessId,
+    );
+    if (!exp) throw new Error("Expense record not found.");
+    const reversedSettlementIds = getReversedTargetIds(reversals, "expense_settlement");
+    const activeSettlements = (state.expenseSettlements ?? []).filter(
+      (s) => s.expenseId === exp.id && !reversedSettlementIds.has(s.id),
+    );
+    if (activeSettlements.length > 0) {
+      throw new Error("Reverse linked expense settlement payments before reversing the parent expense.");
+    }
+    if (exp.journalEntryId) {
+      originalJournalEntryId = exp.journalEntryId;
+      const revJe = createInvertingJournal(exp.journalEntryId, `Expense ${exp.description}`);
+      reversalJournalEntryId = revJe.id;
+    }
+    exp.paidAmountCents = 0;
+    exp.paymentStatus = "unpaid_payable";
+    exp.revision = (exp.revision ?? 1) + 1;
+  } else if (input.targetType === "expense_settlement") {
+    const settlement = (state.expenseSettlements ?? []).find(
+      (s) => s.id === input.targetId && s.businessId === session.businessId,
+    );
+    if (!settlement) throw new Error("Expense payment settlement not found.");
+    const exp = state.expenses.find(
+      (e) => e.id === settlement.expenseId && e.businessId === session.businessId,
+    );
+    if (!exp) throw new Error("Parent expense not found.");
+    originalJournalEntryId = settlement.journalEntryId;
+    const revJe = createInvertingJournal(settlement.journalEntryId, `Expense settlement ${settlement.reference}`);
+    reversalJournalEntryId = revJe.id;
+    exp.paidAmountCents = Math.max(0, exp.paidAmountCents - settlement.amountCents);
+    exp.paymentStatus =
+      exp.paidAmountCents === 0
+        ? "unpaid_payable"
+        : exp.paidAmountCents >= exp.amountCents
+          ? "paid"
+          : "partially_paid";
+    exp.revision = (exp.revision ?? 1) + 1;
+  } else if (input.targetType === "loan_advance" || input.targetType === "loan_repayment") {
+    const ev = state.loanEvents.find(
+      (e) =>
+        e.id === input.targetId &&
+        e.businessId === session.businessId &&
+        ((input.targetType === "loan_advance" && e.eventType === "advance") ||
+          (input.targetType === "loan_repayment" && e.eventType === "repayment")),
+    );
+    if (!ev) throw new Error("Loan transaction not found.");
+    if (input.targetType === "loan_advance") {
+      const loan = state.loans.find((l) => l.id === ev.loanId && l.businessId === session.businessId);
+      if (loan) {
+        const currentBalance = calculateLoanBalanceCents(loan, state.loanEvents, reversals);
+        if (currentBalance.remainingPrincipalCents < ev.amountCents) {
+          throw new Error(
+            "Cannot reverse this loan advance because repayments already exceed the remaining principal without it. Reverse the repayment first.",
+          );
+        }
+      }
+    }
+    originalJournalEntryId = ev.journalEntryId;
+    const revJe = createInvertingJournal(
+      ev.journalEntryId,
+      `${ev.eventType === "advance" ? "Loan advance" : "Loan repayment"} ${ev.reference}`,
+    );
+    reversalJournalEntryId = revJe.id;
+  } else if (input.targetType === "transfer") {
+    const tr = state.transfers.find(
+      (t) => t.id === input.targetId && t.businessId === session.businessId,
+    );
+    if (!tr) throw new Error("Cash transfer not found.");
+    if (tr.status !== "matched" || !tr.journalEntryId) {
+      throw new Error("Only matched, posted cash transfers can be reversed.");
+    }
+    const linkedLoanEvent =
+      tr.transferKind === "lender_advance"
+        ? state.loanEvents.find((e) => e.journalEntryId === tr.journalEntryId && e.businessId === session.businessId)
+        : undefined;
+    if (linkedLoanEvent) {
+      const loan = state.loans.find((l) => l.id === linkedLoanEvent.loanId && l.businessId === session.businessId);
+      if (loan) {
+        const currentBalance = calculateLoanBalanceCents(loan, state.loanEvents, reversals);
+        if (currentBalance.remainingPrincipalCents < linkedLoanEvent.amountCents) {
+          throw new Error(
+            "Cannot reverse this lender-advance transfer because repayments already exceed the remaining principal without it.",
+          );
+        }
+      }
+    }
+    originalJournalEntryId = tr.journalEntryId;
+    const revJe = createInvertingJournal(tr.journalEntryId, `Cash transfer ${tr.sharedReference}`);
+    reversalJournalEntryId = revJe.id;
+    if (linkedLoanEvent && !reversals.some((r) => r.targetType === "loan_advance" && r.targetId === linkedLoanEvent.id)) {
+      reversals.unshift({
+        id: newId(),
+        businessId: session.businessId,
+        targetType: "loan_advance",
+        targetId: linkedLoanEvent.id,
+        originalJournalEntryId,
+        reversalJournalEntryId,
+        reason: cleanReason,
+        reversedBy: session.userId,
+        createdAt: now,
+      });
+    }
+  } else {
+    throw new Error("Unsupported financial reversal target type.");
+  }
+
+  const reversalRecord: FinancialReversal = {
+    id: newId(),
+    businessId: session.businessId,
+    targetType: input.targetType,
+    targetId: input.targetId,
+    originalJournalEntryId,
+    reversalJournalEntryId,
+    reason: cleanReason,
+    reversedBy: session.userId,
+    createdAt: now,
+  };
+  reversals.unshift(reversalRecord);
+  await saveFinanceStore(session, state);
+  return reversalRecord;
 }

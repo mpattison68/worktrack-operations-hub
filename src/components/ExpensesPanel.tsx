@@ -36,6 +36,7 @@ import { calculateFuelUnitCostCents } from "@/lib/domain/finance-calc";
 import { formatDateSA, formatZarCents, parseZarToCents, todaySAST } from "@/lib/format";
 import { can } from "@/lib/permissions";
 import { useOfflineSync } from "@/lib/offline/sync-context";
+import { ReverseTransactionButton } from "@/components/ReverseTransactionButton";
 import { prepareAttachmentFile, type PreparedAttachmentFile } from "@/lib/offline/attachment-utils";
 import { enqueueOfflineMutation, saveOfflineAttachment } from "@/lib/offline/sync-engine";
 import { Badge } from "@/components/ui/badge";
@@ -467,6 +468,13 @@ export function ExpensesPanel({ session, finance, jobs }: ExpensesPanelProps) {
                           Review needed
                         </Badge>
                       )}
+                      <ReverseTransactionButton
+                        session={session}
+                        targetType="expense"
+                        targetId={exp.id}
+                        label={`Expense ${formatZarCents(exp.amountCents)} (${exp.description || exp.category})`}
+                        reversal={(finance.financialReversals ?? []).find((r) => r.targetType === "expense" && r.targetId === exp.id)}
+                      />
                     </div>
                   </div>
                   <p className="text-muted-foreground">
@@ -479,6 +487,28 @@ export function ExpensesPanel({ session, finance, jobs }: ExpensesPanelProps) {
                   )}
                   {exp.duplicateWarningFlag && (
                     <p className="text-status-warn">Duplicate warning: same date &amp; amount already exists.</p>
+                  )}
+                  {(finance.expenseSettlements ?? []).filter((s) => s.expenseId === exp.id).length > 0 && (
+                    <div className="mt-2 space-y-1 border-t border-border pt-2">
+                      {(finance.expenseSettlements ?? [])
+                        .filter((s) => s.expenseId === exp.id)
+                        .map((s) => (
+                          <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                            <span>
+                              Settlement {formatDateSA(s.paymentDate)} ·{" "}
+                              <strong className="tabular-money text-foreground">{formatZarCents(s.amountCents)}</strong>
+                              {s.reference ? ` · Ref: ${s.reference}` : ""}
+                            </span>
+                            <ReverseTransactionButton
+                              session={session}
+                              targetType="expense_settlement"
+                              targetId={s.id}
+                              label={`Expense payment ${formatZarCents(s.amountCents)} on ${formatDateSA(s.paymentDate)}`}
+                              reversal={(finance.financialReversals ?? []).find((r) => r.targetType === "expense_settlement" && r.targetId === s.id)}
+                            />
+                          </div>
+                        ))}
+                    </div>
                   )}
                 </div>
               ))

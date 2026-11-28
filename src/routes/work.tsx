@@ -211,20 +211,39 @@ function WorkProgressPage() {
   const saveInterruptionMutation = useMutation({
     mutationFn: async () => {
       if (!session || !activeJobId) throw new Error("Select a job first.");
-      if(!effectiveOnline)throw new Error("Reconnect before recording an interruption.");
-      return createInterruption(session, {
+      const duration = intFullDay ? 9 : Number(intHours);
+      if (!Number.isFinite(duration) || duration < 0 || duration > 24) {
+        throw new Error("Duration hours must be between 0 and 24.");
+      }
+      const input = {
         jobId: activeJobId,
         interruptionDate: intDate,
-        durationHours: intFullDay ? 9 : Number(intHours),
+        durationHours: duration,
         fullDay: intFullDay,
         affectedCrewOrSection: intAffected,
         reason: intReason,
         comment: intComment,
-      });
+      };
+      if (!effectiveOnline) {
+        await enqueueOfflineMutation(session, {
+          entityType: "interruption",
+          operation: "create",
+          label: `Interruption (${INTERRUPTION_REASON_LABELS[intReason]}) ${intDate}`,
+          payload: { kind: "interruption", input },
+        });
+        await refreshOfflineState();
+        return { queued: true };
+      }
+      await createInterruption(session, input);
+      return { queued: false };
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["work-progress", session?.businessId, activeJobId] });
-      toast.success("Interruption logged.");
+    onSuccess: (res) => {
+      if (res.queued) {
+        toast.info("Interruption saved on phone — awaiting sync.");
+      } else {
+        qc.invalidateQueries({ queryKey: ["work-progress", session?.businessId, activeJobId] });
+        toast.success("Interruption logged.");
+      }
       setIntComment("");
     },
     onError: (err: Error) => toast.error(err.message),

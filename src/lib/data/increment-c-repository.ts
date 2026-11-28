@@ -384,6 +384,7 @@ export async function createProgressEntries(
     gpsAccuracyMeters: number | null;
     photoDate: string | null;
     evidenceNote: string;
+    idempotencyKey?: string;
   },
 ): Promise<ProgressEntry[]> {
   await assertJobReadable(session, input.jobId);
@@ -461,6 +462,16 @@ export async function createProgressEntries(
   }
 
   const store = loadStore();
+  if (input.idempotencyKey) {
+    const keyTag = `[sync:${input.idempotencyKey}]`;
+    const existing = store.progressEntries.filter(
+      (p) => p.businessId === session.businessId && p.id.endsWith(keyTag),
+    );
+    if (existing.length > 0) return existing;
+    for (const c of created) {
+      c.id = `${c.id}-${keyTag}`;
+    }
+  }
   store.progressEntries.unshift(...created);
   saveStore(store);
   return created;
@@ -507,6 +518,7 @@ export async function createInterruption(
     affectedCrewOrSection: string;
     reason: InterruptionReason;
     comment: string;
+    idempotencyKey?: string;
   },
 ): Promise<InterruptionEntry> {
   await assertJobReadable(session, input.jobId);
@@ -545,6 +557,14 @@ export async function createInterruption(
   }
 
   const store = loadStore();
+  if (input.idempotencyKey) {
+    const keyTag = `[sync:${input.idempotencyKey}]`;
+    const existing = store.interruptions.find(
+      (i) => i.businessId === session.businessId && i.id.endsWith(keyTag),
+    );
+    if (existing) return existing;
+    entry.id = `${entry.id}-${keyTag}`;
+  }
   store.interruptions.unshift(entry);
   saveStore(store);
   return entry;

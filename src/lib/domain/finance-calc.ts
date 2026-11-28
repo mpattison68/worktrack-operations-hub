@@ -1,6 +1,8 @@
 import type {
   AccountType,
   ExpenseRecord,
+  FinancialReversal,
+  FinancialReversalTargetType,
   JournalEntry,
   JournalLine,
   LedgerAccount,
@@ -14,6 +16,23 @@ import type {
   WeeklyCashForecastResult,
   WeeklyCashForecastRow,
 } from "@/lib/domain/increment-d-types";
+
+/**
+ * Return the set of reversed target IDs for one or more transaction types.
+ */
+export function getReversedTargetIds(
+  reversals: FinancialReversal[] | undefined,
+  targetTypes: FinancialReversalTargetType | FinancialReversalTargetType[],
+): Set<string> {
+  const types = Array.isArray(targetTypes) ? targetTypes : [targetTypes];
+  const set = new Set<string>();
+  for (const r of reversals ?? []) {
+    if (types.includes(r.targetType)) {
+      set.add(r.targetId);
+    }
+  }
+  return set;
+}
 import type { PayrollRun } from "@/lib/domain/increment-c-types";
 import type { Job } from "@/lib/domain/types";
 
@@ -207,16 +226,19 @@ export function allocateWorkerWagePayment(params: {
 export function summarizeWorkerWagePayments(
   workerId: string,
   payments: WagePayment[],
+  reversals?: FinancialReversal[],
 ): {
   allocatedByRunId: Record<string, number>;
   unallocatedAdvanceCents: number;
   totalPaidCents: number;
 } {
+  const reversedIds = getReversedTargetIds(reversals, "wage_payment");
   const allocatedByRunId: Record<string, number> = {};
   let unallocatedAdvanceCents = 0;
   let totalPaidCents = 0;
 
   for (const payment of payments) {
+    if (reversedIds.has(payment.id)) continue;
     for (const alloc of payment.allocations) {
       if (alloc.workerId !== workerId) continue;
       totalPaidCents += alloc.amountCents;
@@ -239,6 +261,7 @@ export function summarizeWorkerWagePayments(
 export function calculateLoanBalanceCents(
   loan: LoanAccount,
   events: LoanEvent[],
+  reversals?: FinancialReversal[],
 ): {
   openingPrincipalCents: number;
   totalAdvancesCents: number;
@@ -246,12 +269,14 @@ export function calculateLoanBalanceCents(
   totalAdjustmentsCents: number;
   remainingPrincipalCents: number;
 } {
+  const reversedIds = getReversedTargetIds(reversals, ["loan_advance", "loan_repayment"]);
   let totalAdvancesCents = 0;
   let totalRepaymentsCents = 0;
   let totalAdjustmentsCents = 0;
 
   for (const ev of events) {
     if (ev.loanId !== loan.id) continue;
+    if (reversedIds.has(ev.id)) continue;
     if (ev.eventType === "advance") {
       totalAdvancesCents += ev.amountCents;
     } else if (ev.eventType === "repayment") {
@@ -278,7 +303,7 @@ export function calculateLoanBalanceCents(
 export interface LoanStatementRow {
   id: string;
   date: string;
-  type: "opening" | "advance" | "repayment" | "agreed_adjustment";
+  type: "opening" | "advance" | "repayment" | "agreed_adjustment" | "reversal";
   reference: string;
   description: string;
   advanceCents: number;
@@ -305,7 +330,17 @@ export interface LoanStatement {
 /**
  * Build a chronological zero-interest loan statement with running principal balances.
  */
-export function buildLoanStatement(loan: LoanAccount, events: LoanEvent[]): LoanStatement {
+export function buildLoanStatement(
+  loan: LoanAccount,
+  events: LoanEvent[],
+  reversals?: FinancialReversal[],
+): LoanStatement {
+  const reversalByTarget = new Map<string, FinancialReversal>();
+  for (const r of reversals ?? []) {
+    if (r.targetType === "loan_advance" || r.targetType === "loan_repayment") {
+      reversalByTarget.set(r.targetId, r);
+    }
+  }
   const loanEvents = events
     .filter((ev) => ev.loanId === loan.id)
     .slice()
@@ -337,20 +372,21 @@ export function buildLoanStatement(loan: LoanAccount, events: LoanEvent[]): Loan
   ];
 
   for (const ev of loanEvents) {
+    const rev = reversalByTarget.get(ev.id);
     let advanceCents = 0;
     let repaymentCents = 0;
     let adjustmentCents = 0;
     if (ev.eventType === "advance") {
       advanceCents = ev.amountCents;
-      totalAdvancesCents += ev.amountCents;
+      if (!rev) totalAdvancesCents += ev.amountCents;
       running += ev.amountCents;
     } else if (ev.eventType === "repayment") {
       repaymentCents = ev.amountCents;
-      totalRepaymentsCents += ev.amountCents;
+      if (!rev) totalRepaymentsCents += ev.amountCents;
       running = Math.max(0, running - ev.amountCents);
     } else if (ev.eventType === "agreed_adjustment") {
       adjustmentCents = ev.amountCents;
-      totalAdjustmentsCents += ev.amountCents;
+      if (!rev) totalAdjustmentsCents += ev.amountCents;
       running += ev.amountCents;
     }
     rows.push({
@@ -369,8 +405,27 @@ export function buildLoanStatement(loan: LoanAccount, events: LoanEvent[]): Loan
       repaymentCents,
       adjustmentCents,
       runningBalanceCents: running,
-      evidenceStatus: ev.evidenceStatus,
+      evidenceStatus: rev ? "reversed" : ev.evidenceStatus,
     });
+    if (rev) {
+      if (ev.eventType === "advance") {
+        running = Math.max(0, running - ev.amountCents);
+      } else if (ev.eventType === "repayment") {
+        running += ev.amountCents;
+      }
+      rows.push({
+        id: `${ev.id}-rev`,
+        date: rev.createdAt.slice(0, 10),
+        type: "reversal",
+        reference: `REV-${ev.reference || ev.eventDate}`,
+        description: `Reversal: ${rev.reason}`,
+        advanceCents: ev.eventType === "advance" ? -ev.amountCents : 0,
+        repaymentCents: ev.eventType === "repayment" ? -ev.amountCents : 0,
+        adjustmentCents: 0,
+        runningBalanceCents: running,
+        evidenceStatus: "verified",
+      });
+    }
   }
 
   return {
@@ -402,12 +457,16 @@ export interface EvaluatedRepaymentScheduleItem {
 
 /**
  * Evaluate agreed repayment schedule installments against actual repayments posted to date.
+ * Explicit instalment allocations (scheduleId) are applied first (supporting partial & early payments),
+ * then unallocated repayments and any excess spill over chronologically (FIFO).
+ * Total remaining scheduled outflows are capped at remaining loan principal to avoid double-counting.
  */
 export function evaluateLoanRepaymentSchedule(
   loan: LoanAccount,
   events: LoanEvent[],
   schedules: LoanRepaymentSchedule[],
   asOfDate: string,
+  reversals?: FinancialReversal[],
 ): {
   items: EvaluatedRepaymentScheduleItem[];
   totalScheduledCents: number;
@@ -415,14 +474,38 @@ export function evaluateLoanRepaymentSchedule(
   totalOverdueCents: number;
   overdueCount: number;
 } {
-  const loanBalance = calculateLoanBalanceCents(loan, events);
-  let remainingRepaymentCredit = loanBalance.totalRepaymentsCents;
+  const reversedIds = getReversedTargetIds(reversals, ["loan_advance", "loan_repayment"]);
+  const loanBalance = calculateLoanBalanceCents(loan, events, reversals);
   let remainingPrincipalCap = loanBalance.remainingPrincipalCents;
 
   const sorted = schedules
     .filter((s) => s.loanId === loan.id)
     .slice()
     .sort((a, b) => a.expectedDate.localeCompare(b.expectedDate) || a.id.localeCompare(b.id));
+  const scheduleIds = new Set(sorted.map((s) => s.id));
+
+  // First pass: sum repayments explicitly allocated to a specific scheduled instalment
+  const explicitBySchedule = new Map<string, number>();
+  let unallocatedRepaymentPool = 0;
+  for (const ev of events) {
+    if (ev.loanId !== loan.id || ev.eventType !== "repayment" || reversedIds.has(ev.id)) continue;
+    if (ev.scheduleId && scheduleIds.has(ev.scheduleId)) {
+      explicitBySchedule.set(ev.scheduleId, (explicitBySchedule.get(ev.scheduleId) ?? 0) + ev.amountCents);
+    } else {
+      unallocatedRepaymentPool += ev.amountCents;
+    }
+  }
+
+  // Cap explicit allocations at each instalment's expected amount; spill excess into FIFO pool
+  const allocatedBySchedule = new Map<string, number>();
+  for (const schedule of sorted) {
+    const explicit = explicitBySchedule.get(schedule.id) ?? 0;
+    const applied = Math.min(schedule.expectedAmountCents, explicit);
+    allocatedBySchedule.set(schedule.id, applied);
+    if (explicit > applied) {
+      unallocatedRepaymentPool += explicit - applied;
+    }
+  }
 
   const items: EvaluatedRepaymentScheduleItem[] = [];
   let totalScheduledCents = 0;
@@ -432,8 +515,10 @@ export function evaluateLoanRepaymentSchedule(
 
   for (const schedule of sorted) {
     totalScheduledCents += schedule.expectedAmountCents;
-    const paidAmountCents = Math.min(schedule.expectedAmountCents, remainingRepaymentCredit);
-    remainingRepaymentCredit = Math.max(0, remainingRepaymentCredit - paidAmountCents);
+    const explicitPaid = allocatedBySchedule.get(schedule.id) ?? 0;
+    const fifoTopUp = Math.min(schedule.expectedAmountCents - explicitPaid, unallocatedRepaymentPool);
+    unallocatedRepaymentPool = Math.max(0, unallocatedRepaymentPool - fifoTopUp);
+    const paidAmountCents = explicitPaid + fifoTopUp;
 
     const rawOutstanding = Math.max(0, schedule.expectedAmountCents - paidAmountCents);
     const outstandingAmountCents = Math.min(rawOutstanding, remainingPrincipalCap);
@@ -460,6 +545,37 @@ export function evaluateLoanRepaymentSchedule(
     totalOutstandingScheduledCents,
     totalOverdueCents,
     overdueCount,
+  };
+}
+
+/**
+ * Reconcile the loan_liability general-ledger account against the sum of active loan subledger balances.
+ */
+export function reconcileLoanLedgerCents(
+  loans: LoanAccount[],
+  events: LoanEvent[],
+  accounts: LedgerAccount[],
+  journalEntries: JournalEntry[],
+  reversals?: FinancialReversal[],
+): {
+  loanLiabilityLedgerCents: number;
+  loanSubledgerRemainingCents: number;
+  varianceCents: number;
+  balanced: boolean;
+} {
+  const loanLiabilityLedgerCents = accounts
+    .filter((a) => a.accountType === "loan_liability")
+    .reduce((sum, a) => sum + computeAccountBalanceCents(a, journalEntries), 0);
+  const loanSubledgerRemainingCents = loans.reduce(
+    (sum, loan) => sum + calculateLoanBalanceCents(loan, events, reversals).remainingPrincipalCents,
+    0,
+  );
+  const varianceCents = loanLiabilityLedgerCents - loanSubledgerRemainingCents;
+  return {
+    loanLiabilityLedgerCents,
+    loanSubledgerRemainingCents,
+    varianceCents,
+    balanced: varianceCents === 0,
   };
 }
 

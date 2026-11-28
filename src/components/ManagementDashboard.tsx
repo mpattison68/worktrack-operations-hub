@@ -41,6 +41,7 @@ import {
   calculateLoanBalanceCents,
   calculateWeeklyCashForecast,
   computeCashSummary,
+  getReversedTargetIds,
 } from "@/lib/domain/finance-calc";
 import { can } from "@/lib/permissions";
 import {
@@ -129,8 +130,14 @@ export function ManagementDashboard() {
   const finance = financeQuery.data;
   const payrollRuns = (payrollQuery.data ?? []).filter((r) => r.status === "approved");
   const wagesEarnedCents = payrollRuns.reduce((s, r) => s + r.netTotalCents, 0);
-  const wagesPaidCents = (finance?.wagePayments ?? []).filter(p => !activeJob || p.jobId === activeJob.id).reduce((s, w) => s + w.totalAmountCents, 0);
-  const expenses = (finance?.expenses ?? []).filter(e => !activeJob || e.jobId === activeJob.id);
+  const reversedWageIds = getReversedTargetIds(finance?.financialReversals, "wage_payment");
+  const reversedExpenseIds = getReversedTargetIds(finance?.financialReversals, "expense");
+  const wagesPaidCents = (finance?.wagePayments ?? [])
+    .filter((p) => !reversedWageIds.has(p.id) && (!activeJob || p.jobId === activeJob.id))
+    .reduce((s, w) => s + w.totalAmountCents, 0);
+  const expenses = (finance?.expenses ?? []).filter(
+    (e) => !reversedExpenseIds.has(e.id) && (!activeJob || e.jobId === activeJob.id),
+  );
   const opexCents = expenses
     .filter((e) => e.classification === "operating")
     .reduce((s, e) => s + e.amountCents, 0);
@@ -150,7 +157,7 @@ export function ManagementDashboard() {
   const loan = finance?.loans[0] ?? null;
   const loanBalanceCents =
     loan && finance
-      ? calculateLoanBalanceCents(loan, finance.loanEvents).remainingPrincipalCents
+      ? calculateLoanBalanceCents(loan, finance.loanEvents, finance.financialReversals).remainingPrincipalCents
       : 0;
 
   // No automatic wage assumptions. Forecasts are explicitly entered in Cash flow.

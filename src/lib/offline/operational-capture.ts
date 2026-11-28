@@ -1,14 +1,16 @@
 import {supabase} from '@/lib/supabase';
 import type {AuthSession} from '@/lib/domain/types';
 import {encodeRow} from '@/lib/data/database-store';
-import {createProgressEntries,upsertTeamDay,upsertWorkerAttendanceOverride} from '@/lib/data/increment-c-repository';
+import {createInterruption,createProgressEntries,resetWorkerDayToTeam,upsertTeamDay,upsertWorkerAttendanceOverride} from '@/lib/data/increment-c-repository';
 import {getCaptureEpoch} from '@/lib/offline/data-epoch';
-export type OperationalKind='team'|'exception'|'progress';
+export type OperationalKind='team'|'exception'|'reset_exception'|'progress'|'interruption';
 export async function applyOperationalCapture(session:AuthSession,kind:OperationalKind,input:Record<string,unknown>,baseRevision:number,key:string,epoch?:number):Promise<{status:'saved'|'conflict';entityId?:string;server?:Record<string,unknown>;revision?:number}>{
  if(session.mode!=='supabase'){
   if(kind==='team'){const row=await upsertTeamDay(session,input as unknown as Parameters<typeof upsertTeamDay>[1]);return{status:'saved',entityId:row.id};}
   if(kind==='exception'){const row=await upsertWorkerAttendanceOverride(session,input as unknown as Parameters<typeof upsertWorkerAttendanceOverride>[1]);return{status:'saved',entityId:row.id};}
-  const rows=await createProgressEntries(session,input as unknown as Parameters<typeof createProgressEntries>[1]);return{status:'saved',entityId:rows[0]?.id??''};
+  if(kind==='reset_exception'){await resetWorkerDayToTeam(session,String(input['jobId']??''),String(input['workerId']??''),String(input['workDate']??''));return{status:'saved',entityId:`${String(input['workerId']??'')}-${String(input['workDate']??'')}`};}
+  if(kind==='interruption'){const row=await createInterruption(session,{...(input as unknown as Parameters<typeof createInterruption>[1]),idempotencyKey:key});return{status:'saved',entityId:row.id};}
+  const rows=await createProgressEntries(session,{...(input as unknown as Parameters<typeof createProgressEntries>[1]),idempotencyKey:key});return{status:'saved',entityId:rows[0]?.id??''};
  }
  if(!supabase)throw new Error('Connection unavailable.');
  const raw=encodeRow(input,{key:'',table:''});

@@ -174,11 +174,88 @@ export function AttendancePanel({
   });
 
   const resetExceptionMutation = useMutation({
-    mutationFn: ({ workerId, workDate }: { workerId: string; workDate: string }) =>
-      effectiveOnline ? resetWorkerDayToTeam(session, jobId, workerId, workDate) : Promise.reject(new Error("Reconnect before resetting an exception.")),
-    onSuccess: () => {
+    mutationFn: async ({ workerId, workDate }: { workerId: string; workDate: string }) => {
+      if (!effectiveOnline) {
+        await enqueueOfflineMutation(session, {
+          entityType: "attendance",
+          operation: "update",
+          label: `Reset worker exception ${workDate}`,
+          payload: { kind: "reset_exception", input: { jobId, workerId, workDate } },
+        });
+        await refreshOfflineState();
+        return "queued";
+      }
+      await resetWorkerDayToTeam(session, jobId, workerId, workDate);
+      return "saved";
+    },
+    onSuccess: (status) => {
       invalidate();
-      toast.success("Reset worker day back to team pattern.");
+      toast.success(
+        status === "queued"
+          ? "Exception reset saved on phone — awaiting sync."
+          : "Reset worker day back to team pattern.",
+      );
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const bulkApplyWeekdaysMutation = useMutation({
+    mutationFn: async (params: {
+      targetDates: string[];
+      dayStatus: DayWorkStatus;
+      normalHours: number;
+      weekdayOtHours: number;
+      interruptionReason: InterruptionReason | null;
+      notes: string;
+    }) => {
+      let count = 0;
+      for (const workDate of params.targetDates) {
+        const existing = teamByDate.get(workDate);
+        const payload = {
+          jobId,
+          workDate,
+          dayStatus: params.dayStatus,
+          normalHours: params.normalHours,
+          weekdayOtHours: params.weekdayOtHours,
+          saturdayHours: existing?.saturdayHours ?? 0,
+          sundayHours: existing?.sundayHours ?? 0,
+          publicHolidayHours: existing?.publicHolidayHours ?? 0,
+          interruptionReason: params.interruptionReason,
+          notes: params.notes,
+        };
+        const base = existing?.revision ?? 0;
+        if (!effectiveOnline) {
+          await enqueueOfflineMutation(session, {
+            entityType: "attendance",
+            operation: "update",
+            label: `Bulk crew attendance ${workDate}`,
+            payload: { kind: "team", input: payload },
+            baseRevision: base,
+          });
+        } else {
+          const result = await applyOperationalCapture(
+            session,
+            "team",
+            payload as unknown as Record<string, unknown>,
+            base,
+            crypto.randomUUID(),
+          );
+          if (result.status === "conflict") {
+            throw new Error(`Attendance on ${workDate} changed on another device. Refresh before saving.`);
+          }
+        }
+        count += 1;
+      }
+      if (!effectiveOnline) await refreshOfflineState();
+      return { count, queued: !effectiveOnline };
+    },
+    onSuccess: (res) => {
+      invalidate();
+      toast.success(
+        res.queued
+          ? `Saved ${res.count} crew day(s) on phone — awaiting sync.`
+          : `Updated ${res.count} crew day(s) (individual exceptions preserved).`,
+      );
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -235,16 +312,36 @@ export function AttendancePanel({
               Crew roles inherit this pattern unless overridden. Changing a team day preserves individual exceptions.
             </CardDescription>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            className="touch-target gap-2"
-            disabled={copyPriorMutation.isPending || !effectiveOnline}
-            onClick={() => copyPriorMutation.mutate()}
-          >
-            <Copy className="h-4 w-4" />
-            {en.payroll.copyPriorWeek}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="touch-target gap-2"
+              disabled={bulkApplyWeekdaysMutation.isPending}
+              onClick={() =>
+                bulkApplyWeekdaysMutation.mutate({
+                  targetDates: dates.slice(0, 5),
+                  dayStatus: "worked",
+                  normalHours: 9,
+                  weekdayOtHours: 0,
+                  interruptionReason: null,
+                  notes: "Bulk Mon–Fri 9h crew pattern",
+                })
+              }
+            >
+              Mark Mon–Fri 9h (bulk)
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="touch-target gap-2"
+              disabled={copyPriorMutation.isPending || !effectiveOnline}
+              onClick={() => copyPriorMutation.mutate()}
+            >
+              <Copy className="h-4 w-4" />
+              {en.payroll.copyPriorWeek}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-2 sm:grid-cols-7">

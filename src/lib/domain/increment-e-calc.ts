@@ -24,6 +24,7 @@ import type {
   WeeklyReportSnapshot,
 } from "@/lib/domain/increment-e-types";
 import { formatDateSA, formatZarCents } from "@/lib/format";
+import { getReversedTargetIds } from "@/lib/domain/finance-calc";
 
 export const PRE_USE_CHECK_ITEMS: Array<{
   key: PreUseCheckItemKey;
@@ -189,8 +190,10 @@ export function assembleWeeklyReportSnapshot(
     : weekAttendance.filter((a) => a.dayStatus === "worked" || a.dayStatus === "partial").length;
 
   const wagesEarnedCents = activeRun?.netTotalCents ?? 0;
+  const reversedWageIds = getReversedTargetIds(params.financeBundle.financialReversals, "wage_payment");
   const weekWagePayments = params.wagePayments.filter(
     (wp) =>
+      !reversedWageIds.has(wp.id) &&
       (wp.jobId === job.id || wp.jobId === null) &&
       inWeek(wp.paymentDate, weekStart, weekEnd),
   );
@@ -199,8 +202,12 @@ export function assembleWeeklyReportSnapshot(
     .filter((w) => w.openingBalanceCents > 0)
     .reduce((sum, w) => sum + w.openingBalanceCents, 0);
 
+  const reversedExpenseIds = getReversedTargetIds(params.financeBundle.financialReversals, "expense");
   const weekExpenses = params.expenses.filter(
-    (e) => (e.jobId === job.id || e.jobId === null) && inWeek(e.expenseDate, weekStart, weekEnd),
+    (e) =>
+      !reversedExpenseIds.has(e.id) &&
+      (e.jobId === job.id || e.jobId === null) &&
+      inWeek(e.expenseDate, weekStart, weekEnd),
   );
   const expensesIncurredCents = weekExpenses.reduce((sum, e) => sum + e.amountCents, 0);
   const cashSpentCents =

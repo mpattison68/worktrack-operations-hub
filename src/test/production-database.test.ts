@@ -271,4 +271,54 @@ describe('Operational read and reviewer boundaries',()=>{
   await expect(asUser(ADMIN,'UPDATE loans SET opening_principal_cents=1 WHERE id=$1',[loanId])).rejects.toThrow('Opening loan principal cannot be amended');
   await expect(asUser(OWNER,"INSERT INTO loan_repayment_schedules(business_id,loan_id,expected_date,expected_amount_cents) VALUES($1,$2,'2026-12-30',5000)",[B,loanId])).rejects.toThrow(/row-level security/i);
  });
+ it('enforces balanced non-cash loan_opening, Admin-only financial reversals, Owner repayment/receipt RLS, and offline interruption idempotency',async()=>{
+  const acctRows=(await asUser(ADMIN,'SELECT id,account_type FROM accounts WHERE business_id=$1',[B])).rows as Array<{id:string;account_type:string}>;
+  const accByType=(t:string)=>acctRows.find(a=>a.account_type===t)!.id;
+  const loanId=crypto.randomUUID(),openJeId=crypto.randomUUID(),msId=crypto.randomUUID(),rcptId=crypto.randomUUID(),rcptJeId=crypto.randomUUID();
+  const repId=crypto.randomUUID(),repJeId=crypto.randomUUID(),revId=crypto.randomUUID(),revJeId=crypto.randomUUID();
+
+  // 1. Balanced non-cash loan_opening journal entry succeeds
+  await asUser(ADMIN,'SELECT worktrack_apply_changes($1,1,$2)',[B,JSON.stringify([
+   {table:'loans',before:null,after:{id:loanId,business_id:B,lender_name:'Reconciled Lender',opening_principal_cents:5000000,opening_principal_verified:true,effective_date:'2026-12-01',reference:'OPEN-REC-1',notes:'Balanced non-cash opening',interest_rate_percent:0,security_asset_note:'',repayment_terms_note:'Zero interest'}},
+   {table:'journal_entries',before:null,after:{id:openJeId,business_id:B,entry_date:'2026-12-01',source_type:'loan_opening',source_id:loanId,job_id:null,reference:'OPEN-REC-1',description:'Opening loan liability',evidence_status:'verified',reversal_of_id:null,created_by:ADMIN}},
+   {table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:openJeId,account_id:accByType('owner_equity'),debit_cents:5000000,credit_cents:0,memo:'Opening equity offset'}},
+   {table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:openJeId,account_id:accByType('loan_liability'),debit_cents:0,credit_cents:5000000,memo:'Opening loan liability'}},
+   {table:'payment_milestones',before:null,after:{id:msId,business_id:B,job_id:JOB,label:'Owner Receipt Milestone',expected_date:'2026-12-15',expected_amount_cents:2000000,received_amount_cents:0,received_date:null,status:'expected',account_id:null,reference:'INV-OWN-1',journal_entry_id:null}},
+  ])]);
+
+  // 2. Owner can post customer receipt (reported) & unrestricted loan repayment (reported), but NOT loan advance
+  const msBefore=(await asUser(OWNER,'SELECT to_jsonb(m) row FROM payment_milestones m WHERE id=$1',[msId])).rows[0] as {row:Record<string,unknown>};
+  await asUser(OWNER,'SELECT worktrack_apply_changes($1,1,$2)',[B,JSON.stringify([
+   {table:'journal_entries',before:null,after:{id:rcptJeId,business_id:B,entry_date:'2026-12-10',source_type:'customer_receipt',source_id:rcptId,job_id:JOB,reference:'OWN-RCPT-1',description:'Owner customer receipt',evidence_status:'reported',reversal_of_id:null,created_by:OWNER}},
+   {table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:rcptJeId,account_id:accByType('bank'),debit_cents:1000000,credit_cents:0,memo:'Bank deposit'}},
+   {table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:rcptJeId,account_id:accByType('customer_revenue'),debit_cents:0,credit_cents:1000000,memo:'Customer revenue'}},
+   {table:'customer_receipts',before:null,after:{id:rcptId,business_id:B,milestone_id:msId,job_id:JOB,receipt_date:'2026-12-10',amount_cents:1000000,account_id:accByType('bank'),reference:'OWN-RCPT-1',journal_entry_id:rcptJeId,evidence_status:'reported',verified_by:null,recorded_by:OWNER}},
+   {table:'payment_milestones',before:msBefore.row,after:{...msBefore.row,received_amount_cents:1000000,received_date:'2026-12-10',status:'partial',account_id:accByType('bank'),journal_entry_id:rcptJeId}},
+   {table:'journal_entries',before:null,after:{id:repJeId,business_id:B,entry_date:'2026-12-11',source_type:'loan_repayment',source_id:repId,job_id:null,reference:'OWN-REP-1',description:'Owner loan repayment',evidence_status:'reported',reversal_of_id:null,created_by:OWNER}},
+   {table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:repJeId,account_id:accByType('loan_liability'),debit_cents:500000,credit_cents:0,memo:'Reduce loan principal'}},
+   {table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:repJeId,account_id:accByType('bank'),debit_cents:0,credit_cents:500000,memo:'Bank outflow'}},
+   {table:'loan_events',before:null,after:{id:repId,business_id:B,loan_id:loanId,event_date:'2026-12-11',event_type:'repayment',amount_cents:500000,account_id:accByType('bank'),schedule_id:null,used_restricted_funding:false,restricted_eligibility_approved:false,reference:'OWN-REP-1',note:'Owner paid lender',evidence_status:'reported',journal_entry_id:repJeId,recorded_by:OWNER}},
+  ])]);
+
+  // Owner cannot record a loan advance or a financial reversal
+  await expect(asUser(OWNER,"INSERT INTO financial_reversals(business_id,target_type,target_id,original_journal_entry_id,reversal_journal_entry_id,reason) VALUES($1,'loan_repayment',$2,$3,$3,'owner attempt')",[B,repId,repJeId])).rejects.toThrow(/row-level security/i);
+
+  // 3. Admin posts balanced reversal for loan repayment; duplicate reversal is blocked
+  await asUser(ADMIN,'SELECT worktrack_apply_changes($1,1,$2)',[B,JSON.stringify([
+   {table:'journal_entries',before:null,after:{id:revJeId,business_id:B,entry_date:'2026-12-12',source_type:'reversal',source_id:repJeId,job_id:null,reference:'REV-OWN-REP-1',description:'Reversal: wrong date',evidence_status:'verified',reversal_of_id:repJeId,created_by:ADMIN}},
+   {table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:revJeId,account_id:accByType('bank'),debit_cents:500000,credit_cents:0,memo:'Reverse bank outflow'}},
+   {table:'journal_lines',before:null,after:{id:crypto.randomUUID(),business_id:B,journal_entry_id:revJeId,account_id:accByType('loan_liability'),debit_cents:0,credit_cents:500000,memo:'Restore loan principal'}},
+   {table:'financial_reversals',before:null,after:{id:revId,business_id:B,target_type:'loan_repayment',target_id:repId,original_journal_entry_id:repJeId,reversal_journal_entry_id:revJeId,reason:'Wrong payment date',reversed_by:ADMIN}},
+  ])]);
+  await expect(asUser(ADMIN,"INSERT INTO financial_reversals(business_id,target_type,target_id,original_journal_entry_id,reversal_journal_entry_id,reason) VALUES($1,'loan_repayment',$2,$3,$4,'duplicate attempt')",[B,repId,repJeId,revJeId])).rejects.toThrow(/duplicate key/i);
+
+  // 4. Offline interruption capture is idempotent per user key
+  const key=`int-key-${crypto.randomUUID()}`;
+  const first=(await asUser(SUPERVISOR,"SELECT worktrack_capture_offline($1,1,$2,'interruption',$3,0) res",[B,key,JSON.stringify({job_id:JOB,interruption_date:'2026-12-03',duration_hours:4,full_day:false,affected_crew_or_section:'Crew A',reason:'rain',comment:'Heavy storm'})])).rows[0] as {res:{status:string;entityId:string}};
+  const second=(await asUser(SUPERVISOR,"SELECT worktrack_capture_offline($1,1,$2,'interruption',$3,0) res",[B,key,JSON.stringify({job_id:JOB,interruption_date:'2026-12-03',duration_hours:4,full_day:false,affected_crew_or_section:'Crew A',reason:'rain',comment:'Heavy storm'})])).rows[0] as {res:{status:string;entityId:string}};
+  expect(first.res.status).toBe('saved');
+  expect(second.res.entityId).toBe(first.res.entityId);
+  const intCount=(await asUser(ADMIN,"SELECT count(*)::int c FROM interruptions WHERE business_id=$1 AND comment='Heavy storm'",[B])).rows[0] as {c:number};
+  expect(intCount.c).toBe(1);
+ });
 });

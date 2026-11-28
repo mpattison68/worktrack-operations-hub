@@ -2,6 +2,7 @@ export type SyncEntityType =
   | "expense"
   | "vehicle_check"
   | "progress_entry"
+  | "interruption"
   | "attendance"
   | "assessment_waypoint"
   | "attachment";

@@ -29,6 +29,7 @@ export type JournalSourceType =
   | "expense_settlement"
   | "transfer"
   | "customer_receipt"
+  | "loan_opening"
   | "loan_advance"
   | "loan_repayment"
   | "grant_receipt"
@@ -250,6 +251,7 @@ export interface LoanEvent {
   eventType: LoanEventType;
   amountCents: number;
   accountId: string;
+  scheduleId?: string | null;
   usedRestrictedFunding: boolean;
   restrictedEligibilityApproved: boolean;
   reference: string;
@@ -257,6 +259,27 @@ export interface LoanEvent {
   evidenceStatus: EvidenceStatus;
   journalEntryId: string;
   recordedBy: string;
+  createdAt: string;
+}
+
+export type FinancialReversalTargetType =
+  | "customer_receipt"
+  | "wage_payment"
+  | "expense"
+  | "expense_settlement"
+  | "loan_advance"
+  | "loan_repayment"
+  | "transfer";
+
+export interface FinancialReversal {
+  id: string;
+  businessId: string;
+  targetType: FinancialReversalTargetType;
+  targetId: string;
+  originalJournalEntryId: string | null;
+  reversalJournalEntryId: string | null;
+  reason: string;
+  reversedBy: string | null;
   createdAt: string;
 }
 
@@ -310,13 +333,14 @@ export interface FinanceBundle {
   loans: LoanAccount[];
   loanEvents: LoanEvent[];
   loanRepaymentSchedules?: LoanRepaymentSchedule[];
+  financialReversals?: FinancialReversal[];
   customerReceipts?: CustomerReceipt[];
   expenseSettlements?: ExpenseSettlement[];
   forecastAssumptions?: ForecastAssumption[];
   fundingReceipts?: Array<{id:string;businessId:string;receiptDate:string;amountCents:number;accountId:string;journalEntryId:string;reference:string;recordedBy:string;createdAt:string}>;
 }
 export interface CustomerReceipt {
- id:string;businessId:string;milestoneId:string;jobId:string;receiptDate:string;amountCents:number;accountId:string;reference:string;journalEntryId:string;recordedBy:string;createdAt:string;
+ id:string;businessId:string;milestoneId:string;jobId:string;receiptDate:string;amountCents:number;accountId:string;reference:string;journalEntryId:string;evidenceStatus?:EvidenceStatus;verifiedBy?:string|null;recordedBy:string;createdAt:string;
 }
 export interface ExpenseSettlement {
  id:string;businessId:string;expenseId:string;paymentDate:string;amountCents:number;accountId:string;reference:string;journalEntryId:string;recordedBy:string;createdAt:string;

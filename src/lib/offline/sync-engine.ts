@@ -212,7 +212,7 @@ async function executeMutation(
 ): Promise<{ status: "synced" | "conflict"; createdEntityId?: string; conflict?: ConflictRecord }> {
   const payload = mutation.payload as Record<string, unknown>;
 
-  if(mutation.entityType==='attendance'||mutation.entityType==='progress_entry'){
+  if(mutation.entityType==='attendance'||mutation.entityType==='progress_entry'||mutation.entityType==='interruption'){
     const result=await applyOperationalCapture(session,payload['kind'] as OperationalKind,payload['input'] as Record<string,unknown>,mutation.baseRevision??0,mutation.idempotencyKey,mutation.dataEpoch);
     if(result.status==='conflict')return{status:'conflict',conflict:{id:crypto.randomUUID(),mutationId:mutation.id,businessId:session.businessId,userId:session.userId,partitionKey:mutation.partitionKey,entityType:mutation.entityType,entityId:String(result.server?.['id']??mutation.entityId??''),entityLabel:mutation.label,baseRevision:mutation.baseRevision??0,serverRevision:result.revision??0,localPayload:payload,serverPayload:result.server??{},detectedAt:new Date().toISOString(),resolvedAt:null,resolution:null}};
     return{status:'synced',createdEntityId:result.entityId??''};

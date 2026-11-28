@@ -8,6 +8,7 @@ import type { FinanceBundle, PaymentMethod } from "@/lib/domain/increment-d-type
 import { recordBulkWagePayment, updateWagePaymentEvidenceStatus } from "@/lib/data/increment-d-repository";
 import { formatDateSA, formatZarCents, parseZarToCents, todaySAST } from "@/lib/format";
 import { can } from "@/lib/permissions";
+import { ReverseTransactionButton } from "@/components/ReverseTransactionButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -283,6 +284,13 @@ export function WagePaymentsPanel({
                     >
                       {p.evidenceStatus}
                     </Badge>
+                    <ReverseTransactionButton
+                      session={session}
+                      targetType="wage_payment"
+                      targetId={p.id}
+                      label={`Wage payment ${formatZarCents(p.totalAmountCents)} on ${formatDateSA(p.paymentDate)}`}
+                      reversal={(finance.financialReversals ?? []).find((r) => r.targetType === "wage_payment" && r.targetId === p.id)}
+                    />
                     {canVerify && p.evidenceStatus !== "verified" && (
                       <Button
                         size="sm"

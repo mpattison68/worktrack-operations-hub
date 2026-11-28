@@ -241,7 +241,7 @@ describe("Increment D acceptance tests (T12–T17, T23)", () => {
 
     const bundle = await listFinanceBundle(adminSession);
     expect(bundle.transfers).toHaveLength(1);
-    expect(bundle.journalEntries).toHaveLength(1);
+    expect(bundle.journalEntries.filter((j) => j.sourceType === "transfer")).toHaveLength(1);
   });
 
   it("T15: Opening loan R256,900 with R135,000 then R100,000 repayments leaves R21,900; R0 interest; no operating expense posting", async () => {
