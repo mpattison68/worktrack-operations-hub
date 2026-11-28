@@ -35,4 +35,6 @@
 - [x] Commit completed changes; distinguish local commit from unverifiable GitHub sync status
 
 ## Explicit implementation limits
-- Scheduled SMTP digests, offline interruption/bulk-edit capture and general financial reversal UI remain unimplemented; scope/acceptance decision required before a release needing them.
+- Scheduled SMTP email digests remain intentionally deferred; authentication password recovery (`/reset-password`) is implemented and requires isolated-VM SMTP verification.
+- Completed in latest release: general financial transaction reversals (all 7 types), balanced non-cash opening loan reconciliation, Owner customer-receipt & loan-repayment workflows with Admin confirmation and instalment allocation, and offline field operations (bulk crew attendance, exceptions, exception reset, overtime, interruptions/rain/vehicle breakdown/downtime, progress/comments).
+- Fresh deep security scan against the newly committed code is queued as the immediate next step once this commit is saved.

@@ -29,8 +29,8 @@ import {
   listJobProgressBundle,
   resetSyntheticIncrementCStore,
 } from "@/lib/data/increment-c-repository";
-import { clearAllOfflineDataForLogout, listMutations } from "@/lib/offline/idb-store";
-import { enqueueOfflineMutation, runOfflineSync } from "@/lib/offline/sync-engine";
+import { listMutations, resetInMemoryOfflineStore } from "@/lib/offline/idb-store";
+import { enqueueOfflineMutation, runSyncEngine } from "@/lib/offline/sync-engine";
 import { SYNTHETIC_BIZ_A, SYNTHETIC_JOB_1 } from "@/lib/data/synthetic-fixtures";
 
 const adminSession: AuthSession = {
@@ -41,7 +41,7 @@ const adminSession: AuthSession = {
   businessId: SYNTHETIC_BIZ_A,
   businessName: "Vuyo Demo",
   assignedJobIds: [SYNTHETIC_JOB_1],
-  mode: "synthetic",
+  mode: "synthetic_dev",
 };
 
 const ownerSession: AuthSession = {
@@ -96,7 +96,7 @@ describe("Financial reversals, Owner loan/receipt usability, and offline field o
     window.localStorage.clear();
     seedZeroFinance();
     resetSyntheticIncrementCStore();
-    await clearAllOfflineDataForLogout(SYNTHETIC_BIZ_A, supervisorSession.userId);
+    resetInMemoryOfflineStore();
   });
 
   it("reverses all 7 financial transaction types with Admin authorization, reason, duplicate block, and exact ledger/subledger reconciliation", async () => {
@@ -453,12 +453,12 @@ describe("Financial reversals, Owner loan/receipt usability, and offline field o
     expect(persisted.every((m) => m.status === "queued")).toBe(true);
 
     // Sync when back online
-    const firstSync = await runOfflineSync(supervisorSession, true);
+    const firstSync = await runSyncEngine(supervisorSession, { isOnline: true });
     expect(firstSync.synced).toBe(4);
     expect(firstSync.failed).toBe(0);
 
     // Second sync produces zero duplicates
-    const secondSync = await runOfflineSync(supervisorSession, true);
+    const secondSync = await runSyncEngine(supervisorSession, { isOnline: true });
     expect(secondSync.attempted).toBe(0);
 
     const att = await listAttendanceForWeek(supervisorSession, SYNTHETIC_JOB_1, "2026-11-30");

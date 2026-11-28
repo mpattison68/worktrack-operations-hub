@@ -101,7 +101,7 @@ bash deploy/scripts/baseline-existing-migrations.sh
 unset WORKTRACK_BASELINE_CONFIRM
 ```
 
-This records only the original eight filenames, **without executing their SQL**. It does not mark 0009–0020 applied. `migrate.sh` now refuses an existing schema lacking that baseline rather than replaying it.
+This records only the original eight filenames, **without executing their SQL**. It does not mark 0009–0023 applied. `migrate.sh` now refuses an existing schema lacking that baseline rather than replaying it.
 
 ## 6. Take the new-format backup, build, migrate and start
 
@@ -115,7 +115,7 @@ bash deploy/scripts/migrate.sh
 curl -fsS http://127.0.0.1:3080/auth >/dev/null
 ```
 
-There are **20 migration files**: eight original and twelve forward upgrades 0009–0020. Check history after migration and complete the acceptance checklist. Validate any `NOT VALID` constraints only after investigating legacy inconsistencies on the restored environment; never repair history by fabricating transactions.
+There are **23 migration files**: eight original (`202611270001`–`202611270008`) and fifteen forward upgrades (`202611280009`–`202611280023`). No new server-side environment variables or Nginx Proxy Manager / Envoy reverse proxy changes are required for `0021`–`0023`. Check `public.schema_migrations_worktrack` (expect 23 rows) and run `deploy/scripts/verify-restore-drill.sh` on the isolated copy before promoting. Validate any `NOT VALID` constraints only after investigating legacy inconsistencies on the restored environment; never repair history by fabricating transactions.
 
 Remove WorkTrack maintenance only after Admin/Owner/Supervisor, financial read-back, evidence and offline smoke checks pass. Do not execute `reset-business.sh` or `import-workers.sh` here.
 

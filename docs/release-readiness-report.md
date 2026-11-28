@@ -1,6 +1,6 @@
 # WorkTrack — implementation and release-readiness report
 
-28 November 2026. Prior saved hardening commit: `ca47dc2`. This report describes that work plus the implementation corrections completed during this review. **Release verdict: not yet cleared for live deployment.** No production database, Auth account, VM, reset or import was accessed or changed.
+28 November 2026. Updated after completing manual opening loan liabilities, customer receivables, agreed repayment schedules, general financial transaction reversals (all 7 types), Owner loan/receipt workflows, offline field operations (bulk crew attendance, exceptions, overtime, interruptions/rain/vehicle breakdowns/downtime, progress/comments), and attendance verification guards. **Release verdict: ready for isolated VM and physical Android acceptance testing; not yet cleared for live production deployment until those environmental checks and a fresh deep security scan on this commit pass.** No production database, Auth account, VM, reset or import was accessed or changed.
 
 ## 1. Authoritative persistence
 
@@ -8,12 +8,12 @@ Configured production sessions now use the portable database adapter for these p
 
 | Module | Database reads/writes now implemented | Verification obtained |
 |---|---|---|
-| Finance / Money | Accounts, wage payments and allocations, journal headers/lines, expenses, pre-purchase requests/review, transfers, reconciliations, customer milestones/partial receipts, settlements, loans/events, restricted grants and explicit forecast assumptions | Isolated adapter expense write/read-back/replay/CAS tests; ledger/source/role regression tests. Full real-service financial flow still needs VM09/10. |
+| Finance / Money | Accounts, wage payments and allocations, journal headers/lines, expenses, pre-purchase requests/review, transfers, reconciliations, customer milestones/partial receipts (Admin & Owner), settlements, manual opening loans with balanced non-cash ledger reconciliation, loan advances/repayments (Owner repayments with Admin confirmation), agreed repayment schedules with explicit instalment allocation, general financial reversals (all 7 types), restricted grants and explicit forecast assumptions | Isolated PGlite DB/RLS/trigger tests + synthetic end-to-end reversal/loan/Owner workflow tests. Full real-service financial flow still needs VM09/10. |
 | Vehicles | Register/private VIN and cost, checks, defects/resolution and service/fuel records | Isolated register/check/stop-use/defect/alert read-back. Actual handset/offline checks still needed. |
 | Weekly reports | Submit, return, resubmit, approve, amendment and ordered immutable review snapshots | Full repository review/amendment/read-back regression passes in isolated database. |
 | Notifications | Persisted deduplicated alerts, preferences and per-user read/ack receipts | Persisted alert test; fixed returned alert IDs to match stored IDs. SMTP delivery/scheduler not established. |
 | Evidence | Reserve metadata, upload private bytes, finalize metadata, parent selection and signed reads | Implementation present; actual Storage service success/failure/retry/orphan cases unexecuted. |
-| Progress / attendance / payroll | Existing production CRUD plus queued operational replay and atomic source-validated payroll save/approval | Payroll role/rollback/correction/stale-source tests pass. Real API/two-device flows remain environmental tests. |
+| Progress / attendance / payroll | Existing production CRUD plus queued offline capture/replay (bulk crew attendance, individual exceptions, exception resets, overtime, work interruptions/rain/vehicle breakdowns/downtime, and daily progress/comments), Supervisor attendance verification guards, and atomic source-validated payroll save/approval | Payroll role/rollback/correction/stale-source, attendance verification, and offline restart/idempotency tests pass. Real API/two-device flows remain environmental tests. |
 | Assessments | Database assessments/waypoints and atomic scope-plus-planned-job approval with edit versions | Scope/job rollback and Owner lock-bypass regression passes. |
 
 “Implemented” here means a production database code path exists—not that every function has passed a live Supabase end-to-end test. The D/E batch adapter is transactional and RLS-filtered, with a stable bundle snapshot and compare-and-swap updates; nested JSON is now cloned so editing review history cannot mutate the comparison baseline.
@@ -36,7 +36,7 @@ The repository corrections exist. GitHub synchronization itself cannot be verifi
 
 ## 4. New migrations
 
-Original 0001–0008 remain the installation baseline. Twelve forward migrations now exist:
+Original 0001–0008 remain the installation baseline. Fifteen forward migrations now exist (**23 migrations total**):
 
 | File prefix | Purpose |
 |---|---|
@@ -52,8 +52,11 @@ Original 0001–0008 remain the installation baseline. Twelve forward migrations
 | `202611280018_atomic_approval_workflows` | Atomic payroll, source validation, strict report transitions and linked scope/job approval |
 | `202611280019_bidirectional_financial_integrity` | Recorded grant sources, bidirectional postings, transfer locks, allocation locking and review-trigger repair |
 | `202611280020_operational_read_boundaries` | Assigned operational projections, raw financial read denial, progress reviewer guard and private replay receipts |
+| `202611280021_attendance_verification_and_guards` | Supervisor attendance reported/verified workflow, approved-week lock, assignment/hours checks, and progress insert hardening |
+| `202611280022_loan_opening_and_repayment_schedule` | Manual opening loan metadata & immutability lock, `loan_repayment_schedules`, and duplicate payment reference guards |
+| `202611280023_reversals_owner_workflows_and_offline_ops` | `financial_reversals` (all 7 types), balanced non-cash `loan_opening` ledger reconciliation, Owner customer-receipt & loan-repayment RLS/verification, instalment `schedule_id` link, and offline interruption / exception-reset capture |
 
-All files end `.sql`. The entire 20-file chain executes in isolated PGlite with test Auth/Storage scaffolding; PostgreSQL 17.6 extensions, actual grants/PostgREST/Storage and existing legacy data still need testing. New uniqueness constraints may expose existing inconsistencies; do not delete or invent history to force an upgrade through.
+All files end `.sql`. The entire **23-file chain** executes in isolated PGlite with test Auth/Storage scaffolding; PostgreSQL 17.6 extensions, actual grants/PostgREST/Storage and existing legacy data still need testing. New uniqueness constraints may expose existing inconsistencies; do not delete or invent history to force an upgrade through.
 
 ## 5. Approval gaps found and completed now
 
@@ -80,14 +83,16 @@ These approval implementations are complete for the described paths and pass iso
 | Increment B waypoints | 6 | 6 | Geometry, route ordering/sync helpers |
 | Increment C progress/payroll | 12 | 12 | Interval union, completion/rework, rates/OT, attendance/payroll arithmetic |
 | Increment D finance | 8 | 8 | Allocation, ledger/cash/loan/restricted-funding calculations |
+| Loan & contract financials | — | 1 | Zero opening state, R256,900 opening loan, R440,000 contract partial receipts, advances, schedules, overdue forecast, final settlement, exports & role guards |
+| Reversals, Owner workflows & offline ops | — | 3 | All 7 financial reversals, non-cash opening ledger reconciliation, Owner receipts/repayments & instalment allocation, offline bulk attendance/exceptions/overtime/interruptions restart & idempotent sync |
 | Increment E reports/vehicles | 4 | 4 | Report locks/exports and safety evaluation |
 | Increment F sync | 6 | 6 | Queue/PWA/partition and sync rules |
 | Routing | 1 | 1 | Route/access wiring |
-| Production database | 11 | 23 | Migration chain, actual isolated SQL/RLS, adapter read-back, CAS, approvals/rollback/corrections, projection/reviewer/replay privacy |
+| Production database | 11 | 26 | Complete 23-migration chain, isolated SQL/RLS, adapter read-back, CAS, approvals/rollback/corrections, attendance verification, opening loan & schedules, reversals, Owner RLS, and offline interruption idempotency |
 | Administration script wrapper | — | 1 | Runs four Python planning/control unit checks |
-| **Total Vitest** | **68** | **81** | **12 current files** |
+| **Total Vitest** | **68** | **88** | **14 current files** |
 
-Latest full run: **81 passed, 0 failed, 0 skipped**. The script wrapper contains **four passing Python unit checks**; do not double-count these as four additional Vitest tests. Shell syntax and Python compilation pass. Automatic application build passes.
+Latest full run: **88 passed, 0 failed, 0 skipped** across **14 test files**. The script wrapper contains **four passing Python unit checks**; do not double-count these as four additional Vitest tests. Shell syntax (`bash -n deploy/scripts/*.sh`) and Python compilation (`py_compile`) pass. Automatic application build passes.
 
 New regressions initially exposed real UUID, JSON-expression and shared-snapshot failures; these were corrected and rerun. There is no remaining failed test in the final suite. Tests requiring real Auth/Storage/Docker/Postgres services or Android were **not run**, not skipped automated tests. The separate checklist contains 15 VM checks, nine controlled reset/import drill steps and eight Android checks; several are multi-step scenarios.
 
@@ -111,7 +116,11 @@ The deep scan examined the prior saved commit and found raw assigned-job finance
 
 Attendance remains human-reported by authorized field staff: Admin must review before payroll approval; software cannot prove hours actually worked. Continue real RLS/storage/session/role-change abuse tests.
 
-**Incomplete implementation, not environmental verification:** scheduled SMTP notification digests/sending integration; offline interruption capture and some bulk-copy/reset/edit operations are not queued; a general financial reversal/correction UI is not delivered. Existing alerts and Auth email invitation/reset APIs are implemented, but their real SMTP delivery is unverified. These limits must be accepted or implemented before a release requiring them.
+**Remaining deferred / unverified items:**
+- **Intentionally deferred:** scheduled SMTP email notification digests.
+- **Required & implemented, environmentally unverified:** authentication password recovery (`/reset-password`) and invitation emails (real SMTP delivery must be verified on the isolated VM).
+- **Environment variables & reverse proxy:** no new server-side environment variables or Nginx Proxy Manager / Envoy reverse proxy changes were added in this release beyond `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, and `STORAGE_DATA_DIR` documented in `deploy/.env.example` and `CONFIGURATION.md`.
+- **Security re-scan:** a fresh deep security scan against this newly committed snapshot (covering opening loans, financial reversals, Owner workflows, and offline sync) must be triggered after this commit is saved.
 
 **Implemented but environmentally unverified:** actual Node Docker build, Postgres 17.6 upgrade/legacy constraints, GoTrue account workflows and sessions, SMTP invitation/reset delivery, private Storage finalization/retry/orphan recovery, multi-device replay/conflicts, exact reset/import/drain guarantees, encrypted off-site scheduling, full restore and physical Android GPS/PWA.
 

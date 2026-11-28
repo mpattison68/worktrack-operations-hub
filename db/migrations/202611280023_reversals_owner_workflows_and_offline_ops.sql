@@ -521,6 +521,13 @@ REVOKE ALL ON FUNCTION public.worktrack_read_bundle(uuid,text[]) FROM PUBLIC,ano
 GRANT EXECUTE ON FUNCTION public.worktrack_read_bundle(uuid,text[]) TO authenticated;
 
 -- 8. Extend worktrack_capture_offline for interruptions (rain, vehicle breakdown, downtime) and exception reset
+ALTER TABLE public.sync_idempotency_keys
+  DROP CONSTRAINT IF EXISTS sync_idempotency_keys_entity_type_check;
+ALTER TABLE public.sync_idempotency_keys
+  ADD CONSTRAINT sync_idempotency_keys_entity_type_check CHECK (
+    entity_type IN ('expense','vehicle_check','progress_entry','interruption','attendance','assessment_waypoint','attachment')
+  );
+
 CREATE OR REPLACE FUNCTION public.worktrack_capture_offline(p_business uuid,p_epoch bigint,p_key text,p_kind text,p_payload jsonb,p_base_revision integer DEFAULT 0)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
 DECLARE result jsonb; job uuid; actor_email text; oldrow jsonb; newrow jsonb; target uuid; base integer; side text; created uuid; vstate text;
